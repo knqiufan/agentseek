@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 from agentseek.cli import (
     AGENTSEEK_ONBOARD_BANNER,
     AGENTSEEK_ONBOARD_WELCOME,
+    _finish_cli_stream_once,
+    _install_single_cli_log_sink,
     agentseek_version,
     apply_agentseek_chat_channel_defaults,
     apply_agentseek_cli_overrides,
@@ -161,6 +163,40 @@ def test_apply_agentseek_chat_channel_defaults_enables_lifecycle_channels(monkey
     assert channel.metadata == {"chat_id": "chat-1", "session_id": "session-1"}
 
 
+def test_install_single_cli_log_sink_replaces_existing_sinks(monkeypatch) -> None:
+    import loguru
+
+    removed: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    added: list[tuple[object, dict[str, object]]] = []
+
+    monkeypatch.setattr(loguru.logger, "remove", lambda *args, **kwargs: removed.append((args, kwargs)))
+    monkeypatch.setattr(loguru.logger, "add", lambda sink, **kwargs: added.append((sink, kwargs)) or 7)
+
+    channel = type("FakeChannel", (), {"_renderer": type("Renderer", (), {"log": object()})()})()
+
+    handler_id = _install_single_cli_log_sink(channel)
+
+    assert handler_id == 7
+    assert removed == [((), {})]
+    assert added == [(channel._renderer.log, {"colorize": False, "format": "{level:<8} | {message}"})]
+
+
+def test_finish_cli_stream_once_stops_without_extra_update() -> None:
+    calls: list[str] = []
+
+    class FakeLive:
+        def stop(self) -> None:
+            calls.append("stop")
+
+        def update(self, *args, **kwargs) -> None:
+            del args, kwargs
+            calls.append("update")
+
+    _finish_cli_stream_once(object(), FakeLive(), kind="normal", text="hello")
+
+    assert calls == ["stop"]
+
+
 def test_install_project_defaults_calls_uv_init_with_agentseek_sandbox_name(monkeypatch, tmp_path) -> None:
     import bub.builtin.cli as bub_cli
 
@@ -208,3 +244,36 @@ def test_install_project_defaults_skips_uv_when_pyproject_exists(monkeypatch, tm
         object.__setattr__(bub_cli, "_ensure_project", original)
 
     assert captured == []
+
+
+def test_install_project_defaults_creates_sandbox_when_missing(monkeypatch, tmp_path) -> None:
+    """``BUB_PROJECT`` may point at a path that does not exist yet (the default
+    ``.agentseek/agentseek-project`` sandbox). The override must mkdir before
+    invoking ``uv``, otherwise ``subprocess.run`` raises ``FileNotFoundError``.
+    """
+    import bub.builtin.cli as bub_cli
+
+    cwds: list[Path] = []
+
+    def fake_uv(*args: str, cwd: Path) -> None:
+        # If the override forgot to mkdir, this would mirror the real
+        # subprocess failure.
+        if not cwd.is_dir():
+            raise FileNotFoundError(cwd)
+        cwds.append(cwd)
+
+    monkeypatch.setattr(bub_cli, "_uv", fake_uv)
+    monkeypatch.setattr(bub_cli, "_build_bub_requirement", lambda: ["bub"])
+
+    sandbox = tmp_path / "missing-sandbox"
+    assert not sandbox.exists()
+
+    original = bub_cli._ensure_project
+    try:
+        apply_agentseek_install_project_defaults()
+        bub_cli._ensure_project(sandbox)
+    finally:
+        object.__setattr__(bub_cli, "_ensure_project", original)
+
+    assert sandbox.is_dir()
+    assert cwds == [sandbox, sandbox]
