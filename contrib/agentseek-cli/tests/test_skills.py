@@ -135,9 +135,7 @@ def test_skills_falls_back_to_npx(monkeypatch) -> None:
     import shutil
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None
-    )
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None)
     monkeypatch.setattr(subprocess, "run", _stub_subprocess_run(captured, returncode=0))
 
     result = CliRunner().invoke(build_app(), ["skills", "list"])
