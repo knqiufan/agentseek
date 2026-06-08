@@ -1,9 +1,4 @@
----
-name: langchain-cn-models
-description: "Integrate Chinese LLM providers (DeepSeek, Qwen, GLM, etc.) into LangChain. Use when a developer asks to connect a Chinese model via LangChain or wire up a Chinese provider with langchain."
----
-
-# LangChain CN Models
+# CN Model Integration Guide
 
 Help developers write LangChain integration classes for a specified Chinese model (e.g., Qwen, GLM, DeepSeek, Moonshot) using the OpenAI-compatible interface.
 
@@ -12,13 +7,29 @@ Help developers write LangChain integration classes for a specified Chinese mode
 
 ## Step 1: Gather Information
 
-First, confirm the following details with the user:
+Confirm the following details with the user. If the user does not explicitly provide any of these, use reasonable defaults from the provider's documentation.
+
+<!-- gather
+prompt: "Confirm the following details for the model integration:"
+fields:
+  - name: model_name
+    question: "Model name (lowercase, used for directory and class names)"
+    example: "qwen"
+    required: true
+  - name: api_base
+    question: "API base URL (OpenAI-compatible endpoint)"
+    example: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    required: true
+  - name: api_key_env
+    question: "API key environment variable name"
+    example: "QWEN_API_KEY"
+    required: true
+fallback: "Use reasonable defaults from the provider's documentation."
+-->
 
 1. **Model Name** — lowercase, e.g., `qwen`, `glm`, `deepseek`. Used for directory names, class names, and `_llm_type`.
 2. **API Base URL** — the model's OpenAI-compatible endpoint URL.
 3. **API Key Environment Variable Name** — e.g., `QWEN_API_KEY`.
-
-If the user does not explicitly provide any of these, use reasonable defaults.
 
 Additionally, inspect the project directory structure to determine the Python package manager (`uv.lock` → uv, `poetry.lock` → poetry, `requirements.txt` → pip, etc.).
 
@@ -39,16 +50,16 @@ Additionally, inspect the project directory structure to determine the Python pa
 
 ## Step 3: Check if DeepSeek
 
-**If the model is DeepSeek**, first check whether `langchain-deepseek` is installed; install it if not. Then copy `chat_model.py` and `__init__.py` from `reference/deepseek/` into the target subdirectory. Skip all subsequent steps.
+**If the model is DeepSeek**, first check whether `langchain-deepseek` is installed; install it if not. Then copy `chat_model.py` and `__init__.py` from [deepseek/](deepseek/) into the target subdirectory. Skip all subsequent steps.
 
-DeepSeek has an official integration `langchain_deepseek.ChatDeepSeek` whose `_get_request_payload` handles content list conversion and Azure `tool_choice` compatibility, but it does **NOT write back `reasoning_content`**. The code in `reference/` subclasses the official class, only overriding `_get_request_payload` to inject reasoning write-back logic. No other methods need overriding.
+DeepSeek has an official integration `langchain_deepseek.ChatDeepSeek` whose `_get_request_payload` handles content list conversion and Azure `tool_choice` compatibility, but it does **NOT write back `reasoning_content`**. The code in [deepseek/](deepseek/) subclasses the official class, only overriding `_get_request_payload` to inject reasoning write-back logic. No other methods need overriding.
 
 **If the model is another provider**, continue with the steps below.
 
 ## Step 4: Copy the Template
 
 1. Check whether `langchain-openai` is installed; install it if not.
-2. Copy `template/chat_model.py` into the target subdirectory.
+2. Copy the template from [../../template/chat_model.py](../../template/chat_model.py) into the target subdirectory.
 3. Create `__init__.py`: `from .chat_model import <CHAT_CLASS_NAME>`
 
 ## Step 5: Replace Placeholders
@@ -82,9 +93,9 @@ On success, a `data/_profiles.py` file is generated under the model directory, w
 
 ## Step 7: Write Integration Tests
 
-After the model class is complete, you must write integration tests. See the detailed guide at [reference/integration-tests.md](reference/integration-tests.md).
+After the model class is complete, you must write integration tests. See the detailed guide at [integration-tests.md](integration-tests.md).
 
 > [!IMPORTANT]
 > **Before running integration tests, you must remind the user to edit the `.env` file themselves and fill in the required API Key and other environment variables.**
 >
-> When running tests, you will likely encounter common setup issues (package not importable, async test mode, etc.). Refer to the "Common Issues" section at the end of [reference/integration-tests.md](reference/integration-tests.md) for fixes.
+> When running tests, you will likely encounter common setup issues (package not importable, async test mode, etc.). Refer to the "Common Issues" section at the end of [integration-tests.md](integration-tests.md) for fixes.
