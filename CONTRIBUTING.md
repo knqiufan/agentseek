@@ -73,7 +73,7 @@ Most issues leave this unset; an absent priority is not a signal.
 
 ## `status:` — workflow state
 
-- `triage` — needs initial review and scoping
+- `status:triage` — needs initial review and scoping
 - `status:needs-design` — design or a decision is required before implementation
 - `status:blocked` — blocked by another issue or an external dependency
 
