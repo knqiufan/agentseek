@@ -30,6 +30,29 @@ def test_existing_bub_env_takes_precedence(monkeypatch) -> None:
     assert os.environ["BUB_API_KEY"] == "bub-key"
 
 
+def test_agentseek_wecom_aliases_fill_missing_bub_settings(monkeypatch) -> None:
+    expected_secret = "-".join(("test", "secret"))
+    monkeypatch.setenv("AGENTSEEK_WECOM_BOT_ID", "bot-id")
+    monkeypatch.setenv("AGENTSEEK_WECOM_SECRET", expected_secret)
+    monkeypatch.setenv("AGENTSEEK_WECOM_DM_POLICY", "allowlist")
+    target_environ: dict[str, str] = {}
+
+    apply_agentseek_env_aliases(target_environ)
+
+    assert target_environ["BUB_WECOM_BOT_ID"] == "bot-id"
+    assert target_environ["BUB_WECOM_SECRET"] == expected_secret
+    assert target_environ["BUB_WECOM_DM_POLICY"] == "allowlist"
+
+
+def test_native_bub_wecom_setting_takes_precedence_over_agentseek_alias(monkeypatch) -> None:
+    monkeypatch.setenv("AGENTSEEK_WECOM_BOT_ID", "agentseek-bot-id")
+    target_environ = {"BUB_WECOM_BOT_ID": "bub-bot-id"}
+
+    apply_agentseek_env_aliases(target_environ)
+
+    assert target_environ["BUB_WECOM_BOT_ID"] == "bub-bot-id"
+
+
 def test_agentseek_defaults_bub_home_to_agentseek_home(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BUB_HOME", raising=False)

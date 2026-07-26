@@ -73,6 +73,7 @@ plugins = [
     { name = "agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase" },
     { name = "bub-feishu" },
+    { name = "bub-wecom" },
     { name = "bub-mcp" },
     { name = "bub-tapestore-otel" },
 ]
@@ -111,6 +112,7 @@ plugins = [
     { name = "agentseek-schedule-sqlalchemy", editable = "contrib/agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase", editable = "contrib/agentseek-tapestore-oceanbase" },
     { name = "bub-feishu", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-feishu&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
+    { name = "bub-wecom", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-wecom&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "bub-mcp", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-mcp&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "bub-tapestore-otel", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-tapestore-otel&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
 ]
@@ -521,6 +523,14 @@ version = "0.1.0"
 source = { git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-tapestore-sqlalchemy&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32#d9f177145b45d67cc0ca4703a495f062df8e3c32" }
 dependencies = [
     { name = "sqlalchemy" },
+]
+
+[[package]]
+name = "bub-wecom"
+version = "0.1.0"
+source = { git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-wecom&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32#d9f177145b45d67cc0ca4703a495f062df8e3c32" }
+dependencies = [
+    { name = "wecom-aibot-python-sdk" },
 ]
 
 [[package]]
@@ -2705,6 +2715,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pyee"
+version = "13.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/04/e7c1fe4dc78a6fdbfd6c337b1c3732ff543b8a397683ab38378447baa331/pyee-13.0.1.tar.gz", hash = "sha256:0b931f7c14535667ed4c7e0d531716368715e860b988770fc7eb8578d1f67fc8", size = 31655, upload-time = "2026-02-14T21:12:28.044Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/c4/b4d4827c93ef43c01f599ef31453ccc1c132b353284fc6c87d535c233129/pyee-13.0.1-py3-none-any.whl", hash = "sha256:af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228", size = 15659, upload-time = "2026-02-14T21:12:26.263Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3565,6 +3587,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/b4/51fe890511f0f242d07cb1ebe6a5b6db417262b9d2568b460347c57d95cc/wcwidth-0.8.1.tar.gz", hash = "sha256:faf5b4a5366a72dc49cad48cdf21f52bdf63bdda995178e483ba247ff79089b9", size = 1466072, upload-time = "2026-06-08T05:57:23.146Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/6e/95b0e537de1f4d4301f76f944642c6da50d1511cc7b3d64dc418a66c7509/wcwidth-0.8.1-py3-none-any.whl", hash = "sha256:f453740b1e4a4f3291faa37944c555d71056c4da08d59809b307ef4feba695c8", size = 323092, upload-time = "2026-06-08T05:57:21.413Z" },
+]
+
+[[package]]
+name = "wecom-aibot-python-sdk"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "cryptography" },
+    { name = "pyee" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/23/b4/df93b46006e5c1900703aefa59004e6d524a4e73ba56ae73bcce24ff4184/wecom_aibot_python_sdk-1.0.2.tar.gz", hash = "sha256:f8cd9920c0b6cb88bf8a50742fca1e834e5c49e06c3ae861d0f128672c17697b", size = 31706, upload-time = "2026-03-23T07:44:53.949Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/39/f2fab475f15d5bf596c4fa998ddd321b1400bcc6ae2e73d3e935db939379/wecom_aibot_python_sdk-1.0.2-py3-none-any.whl", hash = "sha256:03df207c72021157506647cd9f4ee51b865a7f37d3b5df7f7af1b1c7e677db84", size = 23228, upload-time = "2026-03-23T07:44:52.555Z" },
 ]
 
 [[package]]

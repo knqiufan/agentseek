@@ -122,12 +122,23 @@ def _assert_langchain_default_template(generated: Path) -> None:
     env_text = (generated / ".env.example").read_text(encoding="utf-8")
     compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
     dev_text = (generated / "src" / generated.name / "dev.py").read_text(encoding="utf-8")
+    wecom_text = (generated / "src" / generated.name / "wecom.py").read_text(encoding="utf-8")
+    pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
     assert "AGENTSEEK_PHOENIX_IMAGE=ghcr.io/agentseek-ai/agentseek-phoenix:main" in env_text
     assert "OCEANBASE_SEEKDB_IMAGE=quay.io/oceanbase/seekdb:latest" in env_text
+    assert "BUB_WECOM_BOT_ID=" in env_text
+    assert "BUB_WECOM_SECRET=" in env_text
+    assert "BUB_WECOM_GROUP_ALLOW_FROM" in env_text
     assert "${AGENTSEEK_PHOENIX_IMAGE:-ghcr.io/agentseek-ai/agentseek-phoenix:main}" in compose_text
     assert "${OCEANBASE_SEEKDB_IMAGE:-quay.io/oceanbase/seekdb:latest}" in compose_text
     assert "agentseek task frontend" in dev_text
     assert "npm install --prefix frontend" not in dev_text
+    assert 'serve-wecom = "my_langchain_agent.wecom:main"' in pyproject_text
+    assert '"bub-wecom"' in pyproject_text
+    assert '["bub", "gateway", "--enable-channel", "wecom"]' in wecom_text
+    assert "BUB_WECOM_DM_POLICY=allowlist" in readme_text
+    assert "only one active long connection" in readme_text
 
 
 def _assert_deepagents_content_builder_template(generated: Path) -> None:
