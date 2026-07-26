@@ -24,8 +24,6 @@ from agentseek.env import (
     get_agentseek_settings,
 )
 
-apply_agentseek_env_aliases()
-
 
 def _logfire_console_config(enabled: bool) -> logfire.ConsoleOptions | Literal[False]:
     if not enabled:
@@ -69,6 +67,7 @@ def _create_app_cli_app() -> typer.Typer:
 def _create_agent_cli_app() -> typer.Typer:
     from bub.framework import BubFramework
 
+    apply_agentseek_env_aliases()
     framework = BubFramework(config_file=agentseek_config_file())
     framework.load_hooks()
     app = typer.Typer(
