@@ -64,6 +64,18 @@ while True:
     time.sleep(0.1)
 """
 
+_WAIT_FOR_MARKER_AND_EXIT = """
+import pathlib
+import sys
+import time
+
+marker = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 5
+while not marker.is_file() and time.monotonic() < deadline:
+    time.sleep(0.05)
+raise SystemExit(7)
+"""
+
 
 def _spawn(command: list[str]) -> subprocess.Popen[bytes]:
     popen = cast("Any", subprocess.Popen)
@@ -245,7 +257,7 @@ def test_dev_cli_reaps_remaining_process_tree_and_propagates_exit_code(tmp_path:
             'name = "Dev supervision"',
             "",
             "[processes.quick]",
-            f"command = {json.dumps([python, '-c', 'import time; time.sleep(0.5); raise SystemExit(7)'])}",
+            f"command = {json.dumps([python, '-c', _WAIT_FOR_MARKER_AND_EXIT, marker.as_posix()])}",
             "",
             "[processes.long]",
             f"command = {json.dumps([python, '-c', _CLI_TREE_SCRIPT, marker.as_posix()])}",

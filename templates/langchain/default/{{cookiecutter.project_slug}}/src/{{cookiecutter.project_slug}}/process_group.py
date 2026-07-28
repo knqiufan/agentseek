@@ -125,6 +125,10 @@ def _taskkill(pid: int) -> None:
     )
 
 
+def _last_windows_error() -> OSError:
+    return vars(ctypes)["WinError"](vars(ctypes)["get_last_error"]())
+
+
 class _WindowsJob:
     """Minimal Win32 Job Object wrapper; only instantiated on Windows."""
 
@@ -138,7 +142,7 @@ class _WindowsJob:
             kernel32 = _kernel32()
             handle = kernel32.CreateJobObjectW(None, None)
             if not handle:
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _last_windows_error()
             job = cls(int(handle))
             info = _JobObjectExtendedLimitInformation()
             info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -148,9 +152,9 @@ class _WindowsJob:
                 ctypes.byref(info),
                 ctypes.sizeof(info),
             ):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _last_windows_error()
             if not kernel32.AssignProcessToJobObject(job._handle, cast("Any", process)._handle):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _last_windows_error()
         except (AttributeError, OSError):
             if job is not None:
                 job.close()
@@ -168,12 +172,12 @@ class _WindowsJob:
             ctypes.sizeof(info),
             None,
         ):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _last_windows_error()
         return int(info.ActiveProcesses)
 
     def terminate(self) -> None:
         if self._handle and not _kernel32().TerminateJobObject(self._handle, 1):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _last_windows_error()
 
     def close(self) -> None:
         if self._handle:
@@ -231,7 +235,7 @@ class _JobObjectBasicAccountingInformation(ctypes.Structure):
 
 
 def _kernel32() -> Any:
-    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    kernel32 = vars(ctypes)["WinDLL"]("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
     kernel32.CreateJobObjectW.restype = ctypes.c_void_p
     kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
