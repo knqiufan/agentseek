@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from typer.testing import CliRunner
@@ -798,21 +799,21 @@ cwd = "second"
     second.mkdir()
     outside = tmp_path.parent / f"{tmp_path.name}-outside-partial-startup"
     outside.mkdir()
-    started_process = object()
+    started_process = cast("subprocess.Popen[bytes]", object())
     popen_calls: list[object] = []
     terminated: list[object] = []
     wait_entered = False
 
-    def start_first_process(*args: object, **kwargs: object) -> object:
+    def start_first_process(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
         del args, kwargs
         popen_calls.append(started_process)
         _swap_with_outside_symlink(second, outside)
         return started_process
 
-    def record_terminate(process: object) -> None:
+    def record_terminate(process: lifecycle_core.ManagedProcess) -> None:
         terminated.append(process)
 
-    def fail_wait(processes: list[object]) -> None:
+    def fail_wait(processes: list[lifecycle_core.ManagedProcess]) -> None:
         nonlocal wait_entered
         del processes
         wait_entered = True
@@ -828,7 +829,8 @@ cwd = "second"
 
     _assert_confined_rejection(result, outside, "processes.worker.cwd")
     assert popen_calls == [started_process]
-    assert terminated == [started_process]
+    assert len(terminated) == 1
+    assert cast("lifecycle_core.ManagedProcess", terminated[0]).process is started_process
     assert not wait_entered
 
 
@@ -871,7 +873,7 @@ def test_v1_path_compatibility_keeps_runtime_joins_and_symlinks(tmp_path: Path, 
     monkeypatch.setattr(
         lifecycle_core.subprocess,
         "Popen",
-        lambda command, *, cwd, start_new_session: seen.append(Path(cwd)),
+        lambda command, *, cwd, **kwargs: seen.append(Path(cwd)),
     )
     monkeypatch.delenv("BUB_MODEL", raising=False)
     assert required[0].status == "ok"

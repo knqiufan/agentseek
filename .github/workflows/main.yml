@@ -25,6 +25,25 @@ jobs:
       - name: Run lint and type check
         run: make lint typecheck
 
+  windows-dev-supervision:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.12"
+
+      - name: Check typing
+        shell: bash
+        run: uv run ty check src tests
+
+      - name: Test development process supervision
+        shell: bash
+        run: uv run python -m pytest tests/cli_commands/test_dev_supervision.py
+
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:

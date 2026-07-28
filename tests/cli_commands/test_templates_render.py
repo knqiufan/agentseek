@@ -140,6 +140,7 @@ def _assert_langchain_default_template(generated: Path) -> None:
     env_text = (generated / ".env.example").read_text(encoding="utf-8")
     compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
     dev_text = (generated / "src" / generated.name / "dev.py").read_text(encoding="utf-8")
+    process_group_text = (generated / "src" / generated.name / "process_group.py").read_text(encoding="utf-8")
     feishu_text = (generated / "src" / generated.name / "feishu.py").read_text(encoding="utf-8")
     wecom_text = (generated / "src" / generated.name / "wecom.py").read_text(encoding="utf-8")
     pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
@@ -153,6 +154,9 @@ def _assert_langchain_default_template(generated: Path) -> None:
     assert "${OCEANBASE_SEEKDB_IMAGE:-quay.io/oceanbase/seekdb:latest}" in compose_text
     assert "agentseek task frontend" in dev_text
     assert "npm install --prefix frontend" not in dev_text
+    assert "from .process_group import" in dev_text
+    assert "CREATE_NEW_PROCESS_GROUP" in process_group_text
+    assert "AssignProcessToJobObject" in process_group_text
     assert 'serve-wecom = "my_langchain_agent.wecom:main"' in pyproject_text
     assert '"bub-wecom"' in pyproject_text
     assert '["bub", "gateway", "--enable-channel", "wecom"]' in wecom_text
