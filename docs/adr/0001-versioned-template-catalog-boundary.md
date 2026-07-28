@@ -139,6 +139,9 @@ The packaged `src/skills/` directory remains in core. Those skills ship with
 the AgentSeek distribution and support core lifecycle behavior. They are not
 the same surface as independently installed public skills.
 
+This CLI-option change records catalog selection behavior only. It does not
+execute the template or skills moves described by this decision.
+
 ### Legacy v1 catalog
 
 The current core `templates/` tree and `templates/index.json` remain on the
@@ -283,12 +286,40 @@ the registry and template from the same resolved commit, and uses a separate
 cache entry. It never combines the embedded registry snapshot with overridden
 template files, and the override never selects the legacy core mirror.
 
+### Explicit catalog repository override
+
+`--template-repo <https-url>` selects an explicit AgentSeek catalog repository.
+The repository must contain `templates/index.json`; this option is not a
+general Cookiecutter-source override. It requires
+`--checkout <40-character-lowercase-commit-sha>`, matching `[0-9a-f]{40}`.
+Branches, tags, abbreviated SHAs, and uppercase SHAs are rejected for this
+form.
+
+The explicit repository and exact commit are one catalog coordinate. Listing,
+filtering, describing, and generation resolve the registry and template from
+that same coordinate. The explicit coordinate takes precedence over the
+bundled catalog for those operations. A repository, checkout, registry, or
+template failure is an explicit error; it never falls back to the bundled
+catalog, local core templates, or another revision.
+
+The positional external-URL and absolute-path Cookiecutter passthrough remains
+unchanged. It cannot be combined with `--template-repo`; AgentSeek rejects the
+conflict instead of choosing a source implicitly. The HTTPS-only restriction
+applies to `--template-repo`, not to the existing positional passthrough.
+
+Listing, filtering, and describing inspect catalog content without executing
+Cookiecutter hooks. Generation trusts the selected template content and may
+execute its Cookiecutter hooks.
+
 ### Cache and archive security
 
 Catalog extraction and reuse follow these rules:
 
 - Cache identity includes the catalog repository and exact catalog commit; a
   cache created from mutable `main` cannot satisfy the locked catalog.
+- An explicit catalog cache entry is identified by its normalized repository
+  URL and exact commit. Matching catalog metadata is required before reuse;
+  partial, stale, or mismatched entries are never cache hits.
 - A complete entry includes `cookiecutter.json`, a generated-project source
   tree, and catalog metadata matching the lock.
 - Downloads use HTTPS, bounded time, a maximum 64 MiB compressed response, no
@@ -328,6 +359,7 @@ commit becomes unavailable.
 | AgentSeek 0.1.0 opening an existing project | Project-local lifecycle file | v1 or v2 | V1 remains operational with conservative incomplete JSON metadata; v2 is complete. |
 | Direct use of a legacy core template | Core `templates/` path | v1 | Remains valid but receives no normal feature development. |
 | Explicit external Cookiecutter source | User-selected source | Source-defined | Existing passthrough behavior remains; the source is outside the bundled catalog guarantee. |
+| Explicit AgentSeek catalog override | HTTPS catalog repository at the supplied 40-character lowercase commit SHA | Catalog-defined | List, filter, describe, and create use the same repository and commit; failure does not fall back. |
 
 The core repository may later transfer from `ob-labs` to `agentseek-ai`, but
 the old GitHub URL and default-branch template paths must continue resolving
@@ -346,6 +378,9 @@ The compatibility invariants are therefore:
    commit embedded in a supported release.
 6. Every core dependency URL and commit embedded in a supported lock remains
    anonymously fetchable for generated-project installation.
+7. An explicit catalog override requires an immutable commit, never changes
+   `_agentseek_source_url` from the core repository, and never falls back on
+   failure.
 
 ### Skills boundary
 
@@ -434,6 +469,11 @@ The 0.1.0 release is blocked unless all of these are true:
   supplies its absolute path explicitly;
 - default generated Git dependencies use the locked core repository and commit,
   never the catalog repository;
+- an explicit catalog override accepts only an HTTPS repository with a full
+  lowercase commit SHA, uses that one coordinate for list/filter/describe/create,
+  rejects a direct positional Cookiecutter source, and never falls back;
+- explicit catalog cache reuse requires metadata matching its normalized URL
+  and exact commit, while list/filter/describe do not execute hooks;
 - existing v1 projects retain human command behavior;
 - v1 JSON is conservative and v2 JSON is complete;
 - core `pyproject.toml`, `uv.lock`, package metadata, `v0.1.0` tag, GitHub

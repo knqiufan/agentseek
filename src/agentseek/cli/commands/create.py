@@ -30,14 +30,25 @@ Spec resolution:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
 import shlex
+import stat
 import subprocess
+import tempfile
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePath
-from typing import Any
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from types import MappingProxyType
+from typing import Any, Never
+from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
 import typer
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 from typer.core import TyperGroup
 
 # ---------------------------------------------------------------------------
@@ -79,7 +90,18 @@ REPO_GIT_URL = f"{REPO_URL}.git"
 # The directory inside the repo that holds all cookiecutter templates.
 TEMPLATES_DIR = "templates"
 TEMPLATE_REPO_CACHE_DIR = "agentseek"
+EXPLICIT_TEMPLATE_REPO_CACHE_DIR = "agentseek-explicit-catalogs"
+EXPLICIT_CATALOG_METADATA = ".agentseek-catalog-metadata.json"
+EXPLICIT_CATALOG_REPOSITORY_DIR = "repository"
+EXPLICIT_CATALOG_SCHEMA_VERSION = 1
+EXPLICIT_CATALOG_LOCK_TIMEOUT_SECONDS = 30.0
+EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS = 60.0
 QUARANTINED_TEMPLATE_KEYS: frozenset[str] = frozenset({"bub/contextseek"})
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+_TEMPLATE_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
+    {"CON", "PRN", "AUX", "NUL"} | {f"COM{index}" for index in range(1, 10)} | {f"LPT{index}" for index in range(1, 10)}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +120,28 @@ class TemplateSource:
     install_source_url: str | None = None  # remote repo URL for generated project deps
 
 
+@dataclass(frozen=True)
+class _ExplicitCatalogCoordinate:
+    fetch_url: str
+    normalized_url: str
+    commit: str
+
+
+@dataclass(frozen=True)
+class _PreparedCatalog:
+    templates_root: Path
+    registry: Mapping[str, str]
+    source_policy: str
+
+    @property
+    def is_explicit(self) -> bool:
+        return self.source_policy == "explicit"
+
+
+class _InvalidExplicitCatalog(ValueError):
+    """Raised when an explicit catalog does not satisfy the public contract."""
+
+
 def _git_toplevel() -> Path | None:
     """Return the repository root if we are inside a git working tree."""
     try:
@@ -106,9 +150,10 @@ def _git_toplevel() -> Path | None:
             capture_output=True,
             text=True,
             check=True,
+            timeout=EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS,
         )
         return Path(result.stdout.strip())
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return None
 
 
@@ -145,21 +190,23 @@ def _resolve_type_template(
     project_type: str,
     template_name: str,
     *,
-    templates_root: Path,
+    catalog: _PreparedCatalog | None = None,
+    templates_root: Path | None = None,
 ) -> TemplateSource:
     """Resolve ``<type>/<name>`` from an already prepared template root."""
-    template_path = templates_root / project_type / template_name
-    if (
-        _is_public_template(project_type, template_name, templates_root)
-        and (template_path / "cookiecutter.json").is_file()
-    ):
-        install_source_path = templates_root.parent if _local_templates_root() == templates_root else None
+    if catalog is None:
+        if templates_root is None:
+            raise TypeError
+        catalog = _catalog_from_root(templates_root)
+    template_path = catalog.templates_root / project_type / template_name
+    if _catalog_has_template(catalog, project_type, template_name) and (template_path / "cookiecutter.json").is_file():
+        install_source_path = catalog.templates_root.parent if catalog.source_policy == "local-core" else None
         return TemplateSource(
             template=str(template_path),
             install_source_path=install_source_path,
             install_source_url=None if install_source_path else REPO_GIT_URL,
         )
-    _print_unknown_template(project_type, template_name, templates_root=templates_root)
+    _print_unknown_template(project_type, template_name, catalog=catalog)
     raise typer.Exit(2)
 
 
@@ -173,7 +220,12 @@ def _is_quarantined_template(project_type: str, template_name: str) -> bool:
 
 def _is_external_spec(spec: str) -> bool:
     """Return ``True`` if *spec* looks like a URL or absolute local path."""
-    return spec.startswith(("https://", "http://", "git@", "gh:", "/"))
+    windows_path = PureWindowsPath(spec)
+    return (
+        spec.startswith(("https://", "http://", "git@", "gh:"))
+        or PurePosixPath(spec).is_absolute()
+        or bool(windows_path.drive or windows_path.root)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,25 +233,28 @@ def _is_external_spec(spec: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _list_templates(project_type: str, templates_root: Path | None = None) -> list[str]:
+def _list_templates(
+    project_type: str,
+    catalog_or_root: _PreparedCatalog | Path | None = None,
+) -> list[str]:
     """Return template names available under ``templates/<type>/``."""
-    if templates_root is None:
+    if catalog_or_root is None:
         templates_root = _local_templates_root()
-    if templates_root is None:
-        return []
-    type_dir = templates_root / project_type
+        if templates_root is None:
+            return []
+        catalog = _catalog_from_root(templates_root)
+    elif isinstance(catalog_or_root, _PreparedCatalog):
+        catalog = catalog_or_root
+    else:
+        catalog = _catalog_from_root(catalog_or_root)
+    type_dir = catalog.templates_root / project_type
     if not type_dir.is_dir():
         return []
-    templates = sorted(
+    return sorted(
         entry.name
         for entry in type_dir.iterdir()
-        if (entry / "cookiecutter.json").is_file() and not _is_quarantined_template(project_type, entry.name)
+        if (entry / "cookiecutter.json").is_file() and _catalog_has_template(catalog, project_type, entry.name)
     )
-    descriptions = _load_template_descriptions(templates_root)
-    if not descriptions:
-        return templates
-    public = _public_templates_for_type(project_type, descriptions)
-    return [name for name in templates if name in public]
 
 
 def _cookiecutter_template_is_complete(template_dir: Path) -> bool:
@@ -248,6 +303,596 @@ def _prepare_templates_root(checkout: str | None = None) -> Path:
     return templates_root
 
 
+def _normalize_explicit_repository_url(repository_url: str) -> str:
+    """Return the credential-free HTTPS coordinate used only for cache identity."""
+    if (
+        not repository_url
+        or "?" in repository_url
+        or "#" in repository_url
+        or any(ord(char) < 33 or char.isspace() for char in repository_url)
+    ):
+        raise ValueError
+    try:
+        parsed = urlsplit(repository_url)
+        port = parsed.port
+    except ValueError:
+        raise ValueError from None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+    ):
+        raise ValueError
+
+    decoded_path = parsed.path
+    for _ in range(4):
+        next_path = unquote(decoded_path)
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    else:
+        raise ValueError
+    if any(segment in {".", ".."} for segment in decoded_path.replace("\\", "/").split("/")):
+        raise ValueError
+
+    hostname = parsed.hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = hostname if port in (None, 443) else f"{hostname}:{port}"
+    path = parsed.path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    normalized = SplitResult("https", netloc, path, "", "")
+    return urlunsplit(normalized)
+
+
+def _explicit_catalog_coordinate(args: argparse.Namespace) -> _ExplicitCatalogCoordinate | None:
+    repository_url = args.template_repo
+    if repository_url is None:
+        return None
+    if args.spec and _is_external_spec(args.spec):
+        typer.echo(
+            "--template-repo cannot be combined with a positional URL or absolute path.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        normalized_url = _normalize_explicit_repository_url(repository_url)
+    except ValueError:
+        typer.echo(
+            "--template-repo must be an HTTPS repository URL without credentials, query, or fragment.",
+            err=True,
+        )
+        raise typer.Exit(2) from None
+    if args.checkout is None or _COMMIT_SHA_PATTERN.fullmatch(args.checkout) is None:
+        typer.echo(
+            "--checkout must be a 40-character lowercase commit SHA when --template-repo is used.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return _ExplicitCatalogCoordinate(
+        fetch_url=repository_url,
+        normalized_url=normalized_url,
+        commit=args.checkout,
+    )
+
+
+def _git_head(repo_root: Path) -> str | None:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    return result.stdout.strip()
+
+
+def _git_templates_are_pristine(repo_root: Path) -> bool:
+    """Return whether Git reports no tracked, untracked, or ignored template changes."""
+    try:
+        result = subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(repo_root),
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignored=matching",
+                "--",
+                TEMPLATES_DIR,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.stdout == ""
+
+
+def _path_lexists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _path_is_link_like(path: Path) -> bool:
+    """Detect POSIX links and Windows junction/reparse-point equivalents."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None:
+        try:
+            if is_junction():
+                return True
+        except OSError:
+            return True
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _explicit_catalog_metadata(coordinate: _ExplicitCatalogCoordinate) -> dict[str, object]:
+    return {
+        "schema_version": EXPLICIT_CATALOG_SCHEMA_VERSION,
+        "repository_url": coordinate.normalized_url,
+        "commit": coordinate.commit,
+        "repository_subdirectory": TEMPLATES_DIR,
+    }
+
+
+def _read_explicit_catalog_metadata(cache_entry: Path) -> dict[str, object] | None:
+    metadata_path = cache_entry / EXPLICIT_CATALOG_METADATA
+    if _path_is_link_like(metadata_path):
+        return None
+    try:
+        metadata_stat = metadata_path.lstat()
+        metadata_real = metadata_path.resolve(strict=True)
+        wrapper_real = cache_entry.resolve(strict=True)
+        if not stat.S_ISREG(metadata_stat.st_mode) or metadata_real.parent != wrapper_real:
+            return None
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_explicit_catalog_metadata(
+    cache_entry: Path,
+    coordinate: _ExplicitCatalogCoordinate,
+) -> None:
+    metadata_path = cache_entry / EXPLICIT_CATALOG_METADATA
+    if _path_lexists(metadata_path) or _path_is_link_like(metadata_path):
+        _reject_explicit_catalog("catalog metadata sidecar already exists or is link-like")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(metadata_path, flags, 0o600)
+        metadata_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata_stat.st_mode):
+            _reject_explicit_catalog("catalog metadata sidecar must be a regular file")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = None
+            json.dump(_explicit_catalog_metadata(coordinate), stream, sort_keys=True)
+    except _InvalidExplicitCatalog:
+        raise
+    except OSError as exc:
+        _reject_explicit_catalog("catalog metadata sidecar cannot be created safely", cause=exc)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _explicit_catalog_metadata_matches(
+    actual: dict[str, object] | None,
+    expected: dict[str, object],
+) -> bool:
+    if actual is None or actual.keys() != expected.keys():
+        return False
+    if type(actual["schema_version"]) is not int:
+        return False
+    if not all(type(actual[field]) is str for field in ("repository_url", "commit", "repository_subdirectory")):
+        return False
+    return actual == expected
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _reject_explicit_catalog(reason: str, *, cause: BaseException | None = None) -> Never:
+    raise _InvalidExplicitCatalog(reason) from cause
+
+
+def _explicit_templates_root(repo_root: Path) -> tuple[Path, Path]:
+    if _path_is_link_like(repo_root):
+        _reject_explicit_catalog("repository must not be link-like")
+    try:
+        repo_root = repo_root.resolve(strict=True)
+        templates_root = repo_root / TEMPLATES_DIR
+        if _path_is_link_like(templates_root):
+            _reject_explicit_catalog(f"{TEMPLATES_DIR}/ must not be link-like")
+        templates_real = templates_root.resolve(strict=True)
+    except OSError as exc:
+        _reject_explicit_catalog(f"missing {TEMPLATES_DIR}/ directory", cause=exc)
+    if not templates_root.is_dir() or not _path_is_within(templates_real, repo_root):
+        _reject_explicit_catalog(f"{TEMPLATES_DIR}/ must remain inside the repository")
+    return templates_root, templates_real
+
+
+def _load_strict_explicit_registry(templates_root: Path, templates_real: Path) -> dict[str, str]:
+    index = templates_root / "index.json"
+    if _path_is_link_like(index):
+        _reject_explicit_catalog("templates/index.json must not be link-like")
+    try:
+        index_real = index.resolve(strict=True)
+        data = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _reject_explicit_catalog("templates/index.json must be valid UTF-8 JSON", cause=exc)
+    if not _path_is_within(index_real, templates_real):
+        _reject_explicit_catalog("templates/index.json must remain inside templates/")
+    if not isinstance(data, dict) or not data:
+        _reject_explicit_catalog("templates/index.json must be a non-empty object")
+    if not all(isinstance(key, str) and _TEMPLATE_KEY_PATTERN.fullmatch(key) for key in data):
+        _reject_explicit_catalog("registry keys must be safe type/name identifiers")
+    if not all(isinstance(description, str) for description in data.values()):
+        _reject_explicit_catalog("registry descriptions must be strings")
+    casefold_keys: set[str] = set()
+    for key in data:
+        segments = key.split("/")
+        if any(
+            segment.endswith((".", " ")) or segment.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+            for segment in segments
+        ):
+            _reject_explicit_catalog("registry keys must use portable type/name identifiers")
+        folded = key.casefold()
+        if folded in casefold_keys:
+            _reject_explicit_catalog("registry contains a case-insensitive duplicate key")
+        casefold_keys.add(folded)
+    return data
+
+
+def _validate_explicit_template_symlinks(
+    template_dir: Path,
+    template_real: Path,
+    key: str,
+) -> None:
+    pending = [template_dir]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            _reject_explicit_catalog(f"registered template {key} cannot be inspected", cause=exc)
+        for entry in entries:
+            path = Path(entry.path)
+            if _path_is_link_like(path):
+                _reject_explicit_catalog(f"registered template {key} contains a symlink or other link-like content")
+            try:
+                target = path.resolve(strict=True)
+            except OSError as exc:
+                _reject_explicit_catalog(f"registered template {key} contains unreadable content", cause=exc)
+            if not _path_is_within(target, template_real):
+                _reject_explicit_catalog(f"registered template {key} contains a path escape")
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                elif not entry.is_file(follow_symlinks=False):
+                    _reject_explicit_catalog(f"registered template {key} contains unsupported content")
+            except OSError as exc:
+                _reject_explicit_catalog(f"registered template {key} cannot be inspected", cause=exc)
+
+
+def _validate_explicit_template(templates_root: Path, templates_real: Path, key: str) -> None:
+    template_dir = templates_root / key
+    if _path_is_link_like(template_dir):
+        _reject_explicit_catalog(f"registered template {key} must not be link-like")
+    try:
+        template_real = template_dir.resolve(strict=True)
+    except OSError as exc:
+        _reject_explicit_catalog(f"registered template {key} is missing", cause=exc)
+    if not template_dir.is_dir() or not _path_is_within(template_real, templates_real):
+        _reject_explicit_catalog(f"registered template {key} escapes templates/")
+    _validate_explicit_template_symlinks(template_dir, template_real, key)
+
+    context = _load_cookiecutter_context(template_dir)
+    if context is None or "project_slug" not in context:
+        _reject_explicit_catalog(f"registered template {key} must contain valid cookiecutter.json with project_slug")
+    project_root = template_dir / "{{cookiecutter.project_slug}}"
+    if _path_is_link_like(project_root) or not project_root.is_dir():
+        _reject_explicit_catalog(f"registered template {key} has no generated-project body")
+    try:
+        has_body = any(path.is_file() for path in project_root.rglob("*"))
+    except OSError as exc:
+        _reject_explicit_catalog(f"registered template {key} body cannot be inspected", cause=exc)
+    if not has_body:
+        _reject_explicit_catalog(f"registered template {key} has an empty generated-project body")
+
+
+def _strict_explicit_catalog_descriptions(repo_root: Path) -> dict[str, str]:
+    templates_root, templates_real = _explicit_templates_root(repo_root)
+    data = _load_strict_explicit_registry(templates_root, templates_real)
+    for key in data:
+        _validate_explicit_template(templates_root, templates_real, key)
+    return data
+
+
+def _prepared_catalog(
+    templates_root: Path,
+    registry: Mapping[str, str],
+    *,
+    source_policy: str,
+) -> _PreparedCatalog:
+    return _PreparedCatalog(
+        templates_root=templates_root,
+        registry=MappingProxyType(dict(registry)),
+        source_policy=source_policy,
+    )
+
+
+def _validated_explicit_catalog_cache(
+    cache_entry: Path,
+    coordinate: _ExplicitCatalogCoordinate,
+) -> _PreparedCatalog | None:
+    if _path_is_link_like(cache_entry) or not cache_entry.is_dir():
+        return None
+    try:
+        wrapper_real = cache_entry.resolve(strict=True)
+    except OSError:
+        return None
+    if not _explicit_catalog_metadata_matches(
+        _read_explicit_catalog_metadata(cache_entry),
+        _explicit_catalog_metadata(coordinate),
+    ):
+        return None
+    repo_root = cache_entry / EXPLICIT_CATALOG_REPOSITORY_DIR
+    if _path_is_link_like(repo_root) or not repo_root.is_dir():
+        return None
+    try:
+        if repo_root.resolve(strict=True).parent != wrapper_real:
+            return None
+    except OSError:
+        return None
+    if _git_head(repo_root) != coordinate.commit:
+        return None
+    if not _git_templates_are_pristine(repo_root):
+        return None
+    try:
+        registry = _strict_explicit_catalog_descriptions(repo_root)
+    except _InvalidExplicitCatalog:
+        return None
+    return _prepared_catalog(repo_root / TEMPLATES_DIR, registry, source_policy="explicit")
+
+
+def _ensure_controlled_cache_directory(parent: Path, name: str) -> Path:
+    directory = parent / name
+    if _path_is_link_like(directory):
+        _reject_explicit_catalog(f"cache directory {name} must not be link-like")
+    try:
+        directory.mkdir(exist_ok=True)
+        if _path_is_link_like(directory):
+            _reject_explicit_catalog(f"cache directory {name} must not be link-like")
+        resolved = directory.resolve(strict=True)
+    except OSError as exc:
+        _reject_explicit_catalog(f"cache directory {name} cannot be prepared", cause=exc)
+    if not directory.is_dir() or resolved.parent != parent or resolved != directory:
+        _reject_explicit_catalog(f"cache directory {name} escaped its parent")
+    return resolved
+
+
+def _explicit_catalog_cache_layout(
+    cookiecutters_dir: Path,
+    coordinate: _ExplicitCatalogCoordinate,
+) -> tuple[Path, Path, Path, Path]:
+    try:
+        if _path_is_link_like(cookiecutters_dir):
+            _reject_explicit_catalog("Cookiecutter cache directory must not be link-like")
+        cookiecutters_dir.mkdir(parents=True, exist_ok=True)
+        if _path_is_link_like(cookiecutters_dir):
+            _reject_explicit_catalog("Cookiecutter cache directory must not be link-like")
+        cookiecutters_root = cookiecutters_dir.resolve(strict=True)
+    except OSError as exc:
+        _reject_explicit_catalog("Cookiecutter cache directory cannot be prepared", cause=exc)
+    namespace = _ensure_controlled_cache_directory(cookiecutters_root, EXPLICIT_TEMPLATE_REPO_CACHE_DIR)
+    repository_digest = hashlib.sha256(coordinate.normalized_url.encode()).hexdigest()
+    digest_dir = _ensure_controlled_cache_directory(namespace, repository_digest)
+    cache_entry = digest_dir / coordinate.commit
+    lock_path = digest_dir / f".{coordinate.commit}.lock"
+    if _path_is_link_like(cache_entry):
+        _reject_explicit_catalog("cache commit entry must not be link-like")
+    if _path_is_link_like(lock_path):
+        _reject_explicit_catalog("cache coordinate lock must not be link-like")
+    return namespace, digest_dir, cache_entry, lock_path
+
+
+def _move_stale_cache_entry(cache_entry: Path, digest_dir: Path) -> Path | None:
+    if not _path_lexists(cache_entry):
+        return None
+    if _path_is_link_like(cache_entry):
+        _reject_explicit_catalog("stale cache entry must not be link-like")
+    stale_entry = digest_dir / f".{cache_entry.name}.stale-{uuid.uuid4().hex}"
+    if stale_entry.parent != digest_dir or _path_lexists(stale_entry) or _path_is_link_like(stale_entry):
+        _reject_explicit_catalog("stale cache destination is not confined")
+    cache_entry.replace(stale_entry)
+    return stale_entry
+
+
+def _validate_fetched_explicit_catalog(
+    cloned_root: Path,
+    staging_root: Path,
+    coordinate: _ExplicitCatalogCoordinate,
+) -> dict[str, str]:
+    if not _path_is_within(cloned_root, staging_root):
+        _reject_explicit_catalog("fetched repository escaped the staging directory")
+    if _path_is_link_like(cloned_root):
+        _reject_explicit_catalog("fetched repository must not be link-like")
+    if _git_head(cloned_root) != coordinate.commit:
+        _reject_explicit_catalog("fetched repository HEAD does not match --checkout")
+    if not _git_templates_are_pristine(cloned_root):
+        _reject_explicit_catalog("fetched repository templates are not pristine")
+    return _strict_explicit_catalog_descriptions(cloned_root)
+
+
+def _clone_explicit_repository(
+    repository_url: str,
+    checkout: str,
+    destination: Path,
+) -> None:
+    """Clone one immutable catalog into the caller's exact controlled child."""
+    git_environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        parent_real = destination.parent.resolve(strict=True)
+    except OSError as exc:
+        _reject_explicit_catalog("catalog staging parent is unavailable", cause=exc)
+    if _path_lexists(destination) or _path_is_link_like(destination):
+        _reject_explicit_catalog("catalog repository destination already exists or is link-like")
+    try:
+        subprocess.run(  # noqa: S603
+            ["git", "clone", "--no-checkout", "--", repository_url, str(destination)],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+            env=git_environment,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        _reject_explicit_catalog("catalog repository fetch failed", cause=exc)
+    try:
+        if (
+            _path_is_link_like(destination)
+            or not destination.is_dir()
+            or destination.resolve(strict=True).parent != parent_real
+        ):
+            _reject_explicit_catalog("catalog repository destination is not confined")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(destination), "checkout", "--detach", checkout],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=EXPLICIT_CATALOG_GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+            env=git_environment,
+        )
+    except _InvalidExplicitCatalog:
+        raise
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        _reject_explicit_catalog("catalog repository checkout failed", cause=exc)
+    if _git_head(destination) != checkout:
+        _reject_explicit_catalog("fetched repository HEAD does not match --checkout")
+
+
+def _fetch_and_publish_explicit_catalog(
+    namespace: Path,
+    digest_dir: Path,
+    cache_entry: Path,
+    coordinate: _ExplicitCatalogCoordinate,
+) -> _PreparedCatalog:
+    with tempfile.TemporaryDirectory(prefix=".catalog-", dir=digest_dir) as temporary:
+        staging_root = Path(temporary).resolve(strict=True)
+        if staging_root.parent != digest_dir or _path_is_link_like(staging_root):
+            _reject_explicit_catalog("catalog staging directory escaped its coordinate")
+        candidate = _ensure_controlled_cache_directory(staging_root, "candidate")
+        cloned_root = candidate / EXPLICIT_CATALOG_REPOSITORY_DIR
+        _clone_explicit_repository(coordinate.fetch_url, coordinate.commit, cloned_root)
+        cloned_root = cloned_root.resolve(strict=True)
+        registry = _validate_fetched_explicit_catalog(cloned_root, staging_root, coordinate)
+        _write_explicit_catalog_metadata(candidate, coordinate)
+        stale_entry = _move_stale_cache_entry(cache_entry, digest_dir)
+        try:
+            if (
+                cloned_root.parent != candidate
+                or candidate.parent != staging_root
+                or cache_entry.parent != digest_dir
+                or _path_is_link_like(candidate)
+            ):
+                _reject_explicit_catalog("catalog publication destination is not confined")
+            candidate.replace(cache_entry)
+        except BaseException:
+            if stale_entry is not None and not _path_lexists(cache_entry):
+                stale_entry.replace(cache_entry)
+            raise
+    return _prepared_catalog(
+        cache_entry / EXPLICIT_CATALOG_REPOSITORY_DIR / TEMPLATES_DIR,
+        registry,
+        source_policy="explicit",
+    )
+
+
+def _prepare_explicit_catalog(coordinate: _ExplicitCatalogCoordinate) -> _PreparedCatalog:
+    from cookiecutter.config import get_user_config
+
+    cookiecutters_dir = Path(get_user_config()["cookiecutters_dir"]).expanduser()
+    try:
+        namespace, digest_dir, cache_entry, lock_path = _explicit_catalog_cache_layout(
+            cookiecutters_dir,
+            coordinate,
+        )
+        prepared = _validated_explicit_catalog_cache(cache_entry, coordinate)
+        if prepared is not None:
+            return prepared
+
+        try:
+            lock = FileLock(lock_path, timeout=EXPLICIT_CATALOG_LOCK_TIMEOUT_SECONDS)
+            with lock:
+                if (
+                    _path_is_link_like(namespace)
+                    or namespace.resolve(strict=True) != namespace
+                    or _path_is_link_like(digest_dir)
+                    or digest_dir.resolve(strict=True) != digest_dir
+                    or digest_dir.parent != namespace
+                    or _path_is_link_like(lock_path)
+                    or lock_path.resolve(strict=True).parent != digest_dir
+                ):
+                    _reject_explicit_catalog("cache coordinate lock escaped its namespace")
+                if _path_is_link_like(cache_entry):
+                    _reject_explicit_catalog("cache commit entry must not be link-like")
+                prepared = _validated_explicit_catalog_cache(cache_entry, coordinate)
+                if prepared is not None:
+                    return prepared
+                return _fetch_and_publish_explicit_catalog(
+                    namespace,
+                    digest_dir,
+                    cache_entry,
+                    coordinate,
+                )
+        except FileLockTimeout:
+            prepared = _validated_explicit_catalog_cache(cache_entry, coordinate)
+            if prepared is not None:
+                return prepared
+            raise
+    except _InvalidExplicitCatalog as exc:
+        typer.echo(f"Explicit template catalog is invalid: {exc}.", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("Could not prepare the explicit template catalog.", err=True)
+        raise typer.Exit(1) from None
+
+
 def _load_template_descriptions(templates_root: Path | None = None) -> dict[str, str]:
     if templates_root is None:
         templates_root = _local_templates_root()
@@ -265,18 +910,44 @@ def _load_template_descriptions(templates_root: Path | None = None) -> dict[str,
     return {str(k): str(v) for k, v in data.items()}
 
 
-def _public_templates_for_type(project_type: str, descriptions: dict[str, str]) -> set[str]:
-    prefix = f"{project_type}/"
-    return {key.removeprefix(prefix) for key in descriptions if key.startswith(prefix)}
+def _catalog_from_root(
+    templates_root: Path,
+    *,
+    source_policy: str | None = None,
+) -> _PreparedCatalog:
+    if source_policy is None:
+        local_root = _local_templates_root()
+        source_policy = "local-core" if local_root == templates_root else "remote-core"
+    return _prepared_catalog(
+        templates_root,
+        _load_template_descriptions(templates_root),
+        source_policy=source_policy,
+    )
 
 
-def _is_public_template(project_type: str, template_name: str, templates_root: Path) -> bool:
-    if _is_quarantined_template(project_type, template_name):
+def _prepare_default_catalog(checkout: str | None = None) -> _PreparedCatalog:
+    return _catalog_from_root(_prepare_templates_root(checkout=checkout))
+
+
+def _catalog_has_template(
+    catalog: _PreparedCatalog,
+    project_type: str,
+    template_name: str,
+) -> bool:
+    if not catalog.is_explicit and _is_quarantined_template(project_type, template_name):
         return False
-    descriptions = _load_template_descriptions(templates_root)
-    if not descriptions:
+    if not catalog.registry and not catalog.is_explicit:
         return True
-    return template_name in _public_templates_for_type(project_type, descriptions)
+    return _template_key(project_type, template_name) in catalog.registry
+
+
+def _terminal_safe(value: str) -> str:
+    """Escape terminal control characters while keeping printable Unicode intact."""
+    escaped: list[str] = []
+    for char in value:
+        codepoint = ord(char)
+        escaped.append(f"\\x{codepoint:02x}" if codepoint < 32 or 0x7F <= codepoint < 0xA0 else char)
+    return "".join(escaped)
 
 
 def _print_templates_table(
@@ -301,7 +972,7 @@ def _print_templates_table(
         desc = descriptions.get(key, "")
         typer.echo(f"    {key}")
         if desc:
-            typer.echo(f"      {desc}")
+            typer.echo(f"      {_terminal_safe(desc)}")
 
 
 def _template_matches_filter(project_type: str, template_name: str, descriptions: dict[str, str], keyword: str) -> bool:
@@ -322,16 +993,19 @@ def _filter_templates(
 
 
 def _print_all_templates(
-    templates_root: Path,
-    descriptions: dict[str, str],
+    catalog: _PreparedCatalog,
     *,
     filter_keyword: str | None = None,
 ) -> None:
     """Print all templates across all types with usage hints."""
+    descriptions = dict(catalog.registry)
     total = 0
     for project_type in KNOWN_TYPES:
         templates = _filter_templates(
-            project_type, _list_templates(project_type, templates_root), descriptions, filter_keyword
+            project_type,
+            _list_templates(project_type, catalog),
+            descriptions,
+            filter_keyword,
         )
         total += len(templates)
         if templates or filter_keyword is None:
@@ -392,7 +1066,7 @@ def _prompt_template_name(
     width = max(len(name) for name in templates)
     for index, name in enumerate(templates, start=1):
         desc = descriptions.get(f"{project_type}/{name}", "")
-        suffix = f"  — {desc}" if desc else ""
+        suffix = f"  — {_terminal_safe(desc)}" if desc else ""
         typer.echo(f"  {index}. {name:<{width}}{suffix}")
     raw = typer.prompt(f"Choose template [1-{len(templates)}]", default="1")
     cleaned = raw.strip()
@@ -494,6 +1168,14 @@ def _parse_argv(argv: list[str]) -> argparse.Namespace:
         help="Branch, tag, or commit to checkout when fetching from a remote repository.",
     )
     parser.add_argument(
+        "--template-repo",
+        default=None,
+        help=(
+            "HTTPS AgentSeek catalog repository containing templates/index.json. "
+            "Requires --checkout with a full 40-character lowercase commit SHA."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -542,7 +1224,7 @@ def _load_cookiecutter_context(template_dir: Path) -> dict[str, object] | None:
 def _describe_template(
     source: TemplateSource,
     *,
-    templates_root: Path,
+    catalog: _PreparedCatalog,
 ) -> None:
     """Print template spec, description, and cookiecutter variables.
 
@@ -552,19 +1234,18 @@ def _describe_template(
 
     # Build a clean key (e.g. "bub/default") from the templates root.
     try:
-        rel = template_dir.relative_to(templates_root)
+        rel = template_dir.relative_to(catalog.templates_root)
         parts = rel.parts
         spec_key = f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else str(rel)
     except ValueError:
         spec_key = f"{template_dir.parent.name}/{template_dir.name}"
 
-    descriptions = _load_template_descriptions(templates_root)
-    description = descriptions.get(spec_key, "")
+    description = catalog.registry.get(spec_key, "")
 
     typer.echo(f"\n  Template: {spec_key}")
     typer.echo(f"  {'─' * 60}")
     if description:
-        typer.echo(f"  Description: {description}")
+        typer.echo(f"  Description: {_terminal_safe(description)}")
     else:
         typer.echo("  Description: (none)")
 
@@ -578,11 +1259,12 @@ def _describe_template(
 
     typer.echo(f"  Cookiecutter variables ({len(context)}):")
     for key, value in context.items():
-        display = value if isinstance(value, str) else json.dumps(value)
+        display_key = _terminal_safe(str(key))
+        display = _terminal_safe(value) if isinstance(value, str) else json.dumps(value)
         # Truncate long values for readability.
         if len(display) > 80:
             display = display[:77] + "..."
-        typer.echo(f"    {key}: {display}")
+        typer.echo(f"    {display_key}: {display}")
     typer.echo()
 
 
@@ -590,7 +1272,8 @@ def _handle_external_spec(args: argparse.Namespace) -> None:
     """Run cookiecutter for external specs unless describe mode is requested."""
     if args.describe:
         typer.echo(
-            "--describe only supports bundled templates such as 'bub/default'.",
+            "--describe supports named AgentSeek catalog templates such as 'bub/default', "
+            "not direct Cookiecutter sources.",
             err=True,
         )
         raise typer.Exit(2)
@@ -615,6 +1298,7 @@ def create(ctx: typer.Context) -> None:
     """Scaffold a new agent project from a pre-built template."""
     args = _parse_new_args(ctx)
     output_dir = args.output_dir if args.output_dir is not None else Path.cwd()
+    explicit_catalog = _explicit_catalog_coordinate(args)
 
     # --- External spec (URL or absolute path) → passthrough to cookiecutter ---
     if args.spec and _is_external_spec(args.spec):
@@ -626,10 +1310,24 @@ def create(ctx: typer.Context) -> None:
 
     # --- --list-templates or --template (no value) ---
     if args.list_templates or args.template == _TEMPLATE_LIST_SENTINEL:
-        _show_templates(project_type, checkout=args.checkout, filter_keyword=args.filter)
+        _validate_optional_project_type(project_type)
+        catalog = (
+            _prepare_explicit_catalog(explicit_catalog)
+            if explicit_catalog is not None
+            else _prepare_default_catalog(checkout=args.checkout)
+        )
+        _show_templates(
+            project_type,
+            catalog=catalog,
+            filter_keyword=args.filter,
+        )
         return
 
-    templates_root = _prepare_templates_root(checkout=args.checkout)
+    catalog = (
+        _prepare_explicit_catalog(explicit_catalog)
+        if explicit_catalog is not None
+        else _prepare_default_catalog(checkout=args.checkout)
+    )
 
     # --- Interactive type selection if needed ---
     if project_type is None:
@@ -644,8 +1342,8 @@ def create(ctx: typer.Context) -> None:
         if args.no_input:
             template_name = "default"
         else:
-            descriptions = _load_template_descriptions(templates_root)
-            available = _list_templates(project_type, templates_root)
+            descriptions = dict(catalog.registry)
+            available = _list_templates(project_type, catalog)
             if not available:
                 template_name = "default"
             elif len(available) == 1:
@@ -656,12 +1354,12 @@ def create(ctx: typer.Context) -> None:
     source = _resolve_type_template(
         project_type,
         template_name,
-        templates_root=templates_root,
+        catalog=catalog,
     )
 
     # --- --describe: print template info without generating ---
     if args.describe:
-        _describe_template(source, templates_root=templates_root)
+        _describe_template(source, catalog=catalog)
         return
 
     generated = _run_cookiecutter(source, output_dir=output_dir, no_input=args.no_input)
@@ -701,27 +1399,42 @@ def _validate_project_type(project_type: str) -> None:
         raise typer.Exit(2)
 
 
-def _print_unknown_template(project_type: str, template_name: str, *, templates_root: Path) -> None:
-    available = _list_templates(project_type, templates_root)
+def _validate_optional_project_type(project_type: str | None) -> None:
+    if project_type is not None:
+        _validate_project_type(project_type)
+
+
+def _print_unknown_template(
+    project_type: str,
+    template_name: str,
+    *,
+    catalog: _PreparedCatalog,
+) -> None:
+    available = _list_templates(project_type, catalog)
     typer.echo(f"Template {project_type}/{template_name} was not found. Supported templates:", err=True)
-    _print_templates_table(project_type, available, _load_template_descriptions(templates_root))
+    _print_templates_table(project_type, available, dict(catalog.registry))
 
 
 def _show_templates(
     project_type: str | None,
     *,
-    checkout: str | None = None,
+    catalog: _PreparedCatalog,
     filter_keyword: str | None = None,
 ) -> None:
     if project_type is not None:
         _validate_project_type(project_type)
-    templates_root = _prepare_templates_root(checkout=checkout)
-    descriptions = _load_template_descriptions(templates_root)
+    descriptions = dict(catalog.registry)
     if project_type is None:
-        _print_all_templates(templates_root, descriptions, filter_keyword=filter_keyword)
+        _print_all_templates(
+            catalog,
+            filter_keyword=filter_keyword,
+        )
         return
     templates = _filter_templates(
-        project_type, _list_templates(project_type, templates_root), descriptions, filter_keyword
+        project_type,
+        _list_templates(project_type, catalog),
+        descriptions,
+        filter_keyword,
     )
     _print_templates_table(project_type, templates, descriptions, filter_keyword=filter_keyword)
     typer.echo()
