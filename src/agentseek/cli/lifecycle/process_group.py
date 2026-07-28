@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import signal
@@ -74,12 +75,19 @@ def _terminate_posix(managed: ManagedProcess, *, grace_seconds: float) -> None:
         return
     deadline = time.monotonic() + grace_seconds
     while _process_group_exists(killpg, managed.pid) and time.monotonic() < deadline:
+        managed.poll()
         time.sleep(SHUTDOWN_POLL_SECONDS)
     if _process_group_exists(killpg, managed.pid):
         try:
             killpg(managed.pid, sigkill)
         except ProcessLookupError:
             return
+        _reap_root(managed)
+
+
+def _reap_root(managed: ManagedProcess) -> None:
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        managed.wait(timeout=SHUTDOWN_POLL_SECONDS)
 
 
 def _process_group_exists(killpg: Any, pgid: int) -> bool:
