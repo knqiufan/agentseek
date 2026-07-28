@@ -15,6 +15,7 @@ LIFECYCLE_REFERENCES = (
     ROOT / "docs" / "reference" / "lifecycle-spec.zh.md",
 )
 LIFECYCLE_V2_SPEC_URL = "https://github.com/ob-labs/agentseek/blob/main/specs/lifecycle-v2-service-discovery.md"
+ROOT_DOTENV_EXAMPLE = ROOT / ".env.example"
 
 
 def _public_template_readmes() -> list[Path]:
@@ -62,6 +63,15 @@ def test_core_quickstarts_show_lifecycle_task_discovery() -> None:
 
     for doc in docs:
         assert "agentseek task" in doc.read_text(encoding="utf-8"), doc
+
+
+def test_root_dotenv_example_matches_runtime_alias_contract() -> None:
+    """The root example must not promise dotenv values become Bub aliases."""
+    text = ROOT_DOTENV_EXAMPLE.read_text(encoding="utf-8")
+
+    assert "AGENTSEEK_* variables are passed through to Bub as BUB_* aliases." not in text
+    assert "does not create `BUB_*` aliases" in text
+    assert "launching process environment" in text
 
 
 @pytest.mark.parametrize("reference", LIFECYCLE_REFERENCES)
