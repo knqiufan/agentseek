@@ -15,6 +15,6 @@ def main() -> None:
         try:
             raise SystemExit(gateway.wait())
         except KeyboardInterrupt:
-            raise SystemExit(0)
+            raise SystemExit(0) from None
     finally:
         _terminate(gateway)

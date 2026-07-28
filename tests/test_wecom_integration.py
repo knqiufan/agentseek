@@ -21,16 +21,17 @@ def test_wecom_plugin_is_pinned_to_the_upstream_adapter() -> None:
     assert pyproject["tool"]["uv"]["sources"]["bub-wecom"] == WECOM_SOURCE
 
 
-def test_wecom_env_docs_cover_credentials_and_access_policies() -> None:
+def test_wecom_env_docs_cover_native_credentials_and_access_policies() -> None:
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
     for name in (
-        "AGENTSEEK_WECOM_BOT_ID",
-        "AGENTSEEK_WECOM_SECRET",
-        "AGENTSEEK_WECOM_WEBSOCKET_URL",
-        "AGENTSEEK_WECOM_DM_POLICY",
-        "AGENTSEEK_WECOM_ALLOW_FROM",
-        "AGENTSEEK_WECOM_GROUP_POLICY",
-        "AGENTSEEK_WECOM_GROUP_ALLOW_FROM",
+        "BUB_WECOM_BOT_ID",
+        "BUB_WECOM_SECRET",
+        "BUB_WECOM_WEBSOCKET_URL",
+        "BUB_WECOM_DM_POLICY",
+        "BUB_WECOM_ALLOW_FROM",
+        "BUB_WECOM_GROUP_POLICY",
+        "BUB_WECOM_GROUP_ALLOW_FROM",
     ):
         assert name in env_example
+    assert "AGENTSEEK_WECOM_" not in env_example

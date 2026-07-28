@@ -122,6 +122,7 @@ def _assert_langchain_default_template(generated: Path) -> None:
     env_text = (generated / ".env.example").read_text(encoding="utf-8")
     compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
     dev_text = (generated / "src" / generated.name / "dev.py").read_text(encoding="utf-8")
+    feishu_text = (generated / "src" / generated.name / "feishu.py").read_text(encoding="utf-8")
     wecom_text = (generated / "src" / generated.name / "wecom.py").read_text(encoding="utf-8")
     pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
     readme_text = (generated / "README.md").read_text(encoding="utf-8")
@@ -137,6 +138,8 @@ def _assert_langchain_default_template(generated: Path) -> None:
     assert 'serve-wecom = "my_langchain_agent.wecom:main"' in pyproject_text
     assert '"bub-wecom"' in pyproject_text
     assert '["bub", "gateway", "--enable-channel", "wecom"]' in wecom_text
+    assert "raise SystemExit(0) from None" in feishu_text
+    assert "raise SystemExit(0) from None" in wecom_text
     assert "BUB_WECOM_DM_POLICY=allowlist" in readme_text
     assert "only one active long connection" in readme_text
 
