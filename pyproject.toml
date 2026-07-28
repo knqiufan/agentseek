@@ -49,6 +49,7 @@ dev = [
 ]
 plugins = [
     "bub-feishu",
+    "bub-wecom",
     "bub-mcp",
     "bub-tapestore-otel",
     "agentseek-schedule-sqlalchemy",
@@ -79,6 +80,7 @@ index-url = "https://pypi.org/simple"
 [tool.uv.sources]
 # bub-contrib: pin to a specific commit so resolves are reproducible across environments.
 bub-feishu = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-feishu" }
+bub-wecom = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-wecom" }
 bub-mcp = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-mcp" }
 bub-tapestore-sqlalchemy = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-tapestore-sqlalchemy" }
 bub-tapestore-otel = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-tapestore-otel" }

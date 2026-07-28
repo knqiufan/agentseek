@@ -72,6 +72,13 @@ agentseek dev
 Template types currently include `bub`, `deepagents`, and `langchain`. Each
 template can expose the same lifecycle commands with different runtimes.
 
+## Chat Channels
+
+The `langchain/default` template can run its agent through Feishu or WeCom
+(企业微信) gateways in addition to its AG-UI surface. Both use Bub-maintained
+channel adapters; configure the channel credentials in the generated `.env`
+and follow that template's channel setup instructions.
+
 ## Documentation
 
 - [Documentation home](https://ob-labs.github.io/agentseek/)
