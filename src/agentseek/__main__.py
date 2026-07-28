@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from typing import Literal
 
@@ -65,11 +66,19 @@ def _create_app_cli_app() -> typer.Typer:
 
 
 def _create_agent_cli_app() -> typer.Typer:
-    from bub.framework import BubFramework
-
     apply_agentseek_env_aliases()
-    framework = BubFramework(config_file=agentseek_config_file())
-    framework.load_hooks()
+    previous_dotenv_disabled = os.environ.get("PYTHON_DOTENV_DISABLED")
+    os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+    try:
+        from bub.framework import BubFramework
+
+        framework = BubFramework(config_file=agentseek_config_file())
+        framework.load_hooks()
+    finally:
+        if previous_dotenv_disabled is None:
+            os.environ.pop("PYTHON_DOTENV_DISABLED", None)
+        else:
+            os.environ["PYTHON_DOTENV_DISABLED"] = previous_dotenv_disabled
     app = typer.Typer(
         name="agentseek",
         help=_format_cli_help(AGENTSEEK_AGENT_MODE_HELP),

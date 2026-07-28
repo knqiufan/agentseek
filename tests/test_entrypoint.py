@@ -95,6 +95,49 @@ command = ["{Path(sys.executable).as_posix()}", "{capture_script.as_posix()}"]
     assert captured == {"AGENTSEEK_SECRET": None, "BUB_SECRET": None}
 
 
+def test_agent_mode_only_aliases_launch_environment(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "AGENTSEEK_MODEL=dotenv-model\nAGENTSEEK_SECRET=dotenv-secret\n",
+        encoding="utf-8",
+    )
+    parent_environ = os.environ.copy()
+    for name in ("AGENTSEEK_SECRET", "BUB_MODEL", "BUB_SECRET", "PYTHON_DOTENV_DISABLED"):
+        parent_environ.pop(name, None)
+    parent_environ["AGENTSEEK_MODEL"] = "shell-model"
+    probe = """
+import json
+import os
+import sys
+
+sys.argv = ["agentseek", "--mode", "agent"]
+import agentseek.__main__  # noqa: F401
+
+print(json.dumps({
+    "AGENTSEEK_SECRET": os.environ.get("AGENTSEEK_SECRET"),
+    "BUB_MODEL": os.environ.get("BUB_MODEL"),
+    "BUB_SECRET": os.environ.get("BUB_SECRET"),
+    "PYTHON_DOTENV_DISABLED": os.environ.get("PYTHON_DOTENV_DISABLED"),
+}))
+""".lstrip()
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=parent_environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {
+        "AGENTSEEK_SECRET": None,
+        "BUB_MODEL": "shell-model",
+        "BUB_SECRET": None,
+        "PYTHON_DOTENV_DISABLED": None,
+    }
+
+
 def test_logfire_console_config_maps_bool_to_runtime_config() -> None:
     from logfire import ConsoleOptions
 
