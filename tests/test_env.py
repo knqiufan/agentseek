@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 
 from agentseek.env import (
     DEFAULT_AGENTSEEK_CONFIG,
@@ -14,6 +16,8 @@ from agentseek.env import (
 
 def test_agentseek_env_fills_missing_bub_env(monkeypatch) -> None:
     monkeypatch.delenv("BUB_MODEL", raising=False)
+    monkeypatch.delenv("BUB_HOME", raising=False)
+    monkeypatch.delenv("BUB_PROJECT", raising=False)
     monkeypatch.setenv("AGENTSEEK_MODEL", "openai:test-model")
 
     apply_agentseek_env_aliases()
@@ -24,6 +28,8 @@ def test_agentseek_env_fills_missing_bub_env(monkeypatch) -> None:
 def test_existing_bub_env_takes_precedence(monkeypatch) -> None:
     monkeypatch.setenv("BUB_API_KEY", "bub-key")
     monkeypatch.setenv("AGENTSEEK_API_KEY", "agentseek-key")
+    monkeypatch.delenv("BUB_HOME", raising=False)
+    monkeypatch.delenv("BUB_PROJECT", raising=False)
 
     apply_agentseek_env_aliases()
 
@@ -44,6 +50,7 @@ def test_agentseek_defaults_bub_home_to_agentseek_home(monkeypatch, tmp_path) ->
 def test_agentseek_home_alias_fills_missing_bub_home(monkeypatch, tmp_path) -> None:
     agentseek_home = tmp_path / "agentseek-home"
     monkeypatch.delenv("BUB_HOME", raising=False)
+    monkeypatch.delenv("BUB_PROJECT", raising=False)
     monkeypatch.setenv("AGENTSEEK_HOME", str(agentseek_home))
 
     apply_agentseek_env_aliases()
@@ -55,6 +62,7 @@ def test_existing_bub_home_takes_precedence(monkeypatch, tmp_path) -> None:
     bub_home = tmp_path / "bub-home"
     agentseek_home = tmp_path / "agentseek-home"
     monkeypatch.setenv("BUB_HOME", str(bub_home))
+    monkeypatch.delenv("BUB_PROJECT", raising=False)
     monkeypatch.setenv("AGENTSEEK_HOME", str(agentseek_home))
 
     apply_agentseek_env_aliases()
@@ -85,21 +93,30 @@ def test_existing_bub_project_takes_precedence(monkeypatch, tmp_path) -> None:
     assert os.environ["BUB_PROJECT"] == str(tmp_path / "custom-project")
 
 
-def test_agentseek_dotenv_fills_missing_bub_env(monkeypatch, tmp_path) -> None:
+def test_agentseek_dotenv_does_not_fill_missing_bub_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BUB_TAPESTORE_SQLALCHEMY_URL", raising=False)
-    monkeypatch.delenv("AGENTSEEK_TAPESTORE_SQLALCHEMY_URL", raising=False)
     (tmp_path / ".env").write_text(
         "AGENTSEEK_TAPESTORE_SQLALCHEMY_URL=sqlite+pysqlite:////tmp/agentseek.sqlite\n",
         encoding="utf-8",
     )
+    target_environ: dict[str, str] = {}
 
-    try:
-        apply_agentseek_env_aliases()
-        assert os.environ["BUB_TAPESTORE_SQLALCHEMY_URL"] == "sqlite+pysqlite:////tmp/agentseek.sqlite"
-    finally:
-        # apply_agentseek_env_aliases uses setdefault on os.environ; pytest does not undo that.
-        os.environ.pop("BUB_TAPESTORE_SQLALCHEMY_URL", None)
+    apply_agentseek_env_aliases(target_environ)
+
+    assert "BUB_TAPESTORE_SQLALCHEMY_URL" not in target_environ
+
+
+def test_importing_main_does_not_promote_dotenv_secrets(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTSEEK_SECRET", raising=False)
+    monkeypatch.delenv("BUB_SECRET", raising=False)
+    monkeypatch.delitem(sys.modules, "agentseek.__main__", raising=False)
+    (tmp_path / ".env").write_text("AGENTSEEK_SECRET=dotenv-secret\n", encoding="utf-8")
+    original_environ = os.environ.copy()
+
+    importlib.import_module("agentseek.__main__")
+
+    assert os.environ == original_environ
 
 
 def test_agentseek_settings_default_console_false(monkeypatch) -> None:
@@ -116,8 +133,7 @@ def test_agentseek_settings_reads_console_from_env(monkeypatch) -> None:
 
 def test_apply_agentseek_env_aliases_updates_supplied_mapping(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("AGENTSEEK_MODEL", "openai:test-model")
-    target_environ: dict[str, str] = {}
+    target_environ = {"AGENTSEEK_MODEL": "openai:test-model"}
 
     apply_agentseek_env_aliases(target_environ)
 

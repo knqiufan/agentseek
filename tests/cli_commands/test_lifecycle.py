@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -416,29 +418,48 @@ cwd = "missing-dir"
     assert "update [tasks.missing_cwd].cwd" in result.stderr
 
 
-def test_task_does_not_pass_env_file_to_child_process(tmp_path: Path, monkeypatch) -> None:
+def test_task_child_process_does_not_inherit_env_file(tmp_path: Path, monkeypatch) -> None:
     _write_lifecycle_spec(tmp_path)
-    (tmp_path / ".env").write_text(
-        "BUB_MODEL=dotenv-model\nBUB_OPENAI_API_KEY=dotenv-key\nEXTRA_DOTENV=hidden\n",
+    spec_path = tmp_path / ".agentseek" / "lifecycle.toml"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace(sys.executable, Path(sys.executable).as_posix()),
         encoding="utf-8",
     )
-    captured_env_kwarg: object = None
+    (tmp_path / ".env").write_text(
+        (
+            "BUB_MODEL=dotenv-model\n"
+            "BUB_OPENAI_API_KEY=dotenv-key\n"
+            "EXTRA_DOTENV=hidden\n"
+            "AGENTSEEK_SECRET=dotenv-secret\n"
+        ),
+        encoding="utf-8",
+    )
+    captured_child_environ: dict[str, str] | None = None
 
     def fake_call(command: object, *, cwd: object, **kwargs: Any) -> int:
-        nonlocal captured_env_kwarg
+        nonlocal captured_child_environ
         del command, cwd
-        captured_env_kwarg = kwargs.get("env")
+        captured_child_environ = dict(kwargs.get("env", os.environ))
         return 0
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTSEEK_SECRET", raising=False)
+    monkeypatch.delenv("BUB_SECRET", raising=False)
     monkeypatch.setenv("BUB_MODEL", "shell-model")
     monkeypatch.setenv("BUB_OPENAI_API_KEY", "shell-key")
+    monkeypatch.delitem(sys.modules, "agentseek.__main__", raising=False)
+    importlib.import_module("agentseek.__main__")
     monkeypatch.setattr("agentseek.cli.lifecycle.core.subprocess.call", fake_call)
 
     result = CliRunner().invoke(build_command_app(), ["task", "version"])
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert captured_env_kwarg is None
+    assert captured_child_environ is not None
+    assert captured_child_environ["BUB_MODEL"] == "shell-model"
+    assert captured_child_environ["BUB_OPENAI_API_KEY"] == "shell-key"
+    assert "EXTRA_DOTENV" not in captured_child_environ
+    assert "AGENTSEEK_SECRET" not in captured_child_environ
+    assert "BUB_SECRET" not in captured_child_environ
 
 
 @pytest.mark.parametrize("command", (["info"], ["doctor"]))
