@@ -25,8 +25,15 @@ jobs:
       - name: Run lint and type check
         run: make lint typecheck
 
-  windows-dev-supervision:
-    runs-on: windows-latest
+  cross-platform-tests-and-type-check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -40,9 +47,8 @@ jobs:
         shell: bash
         run: uv run ty check src tests
 
-      - name: Test development process supervision
-        shell: bash
-        run: uv run python -m pytest tests/cli_commands/test_dev_supervision.py
+      - name: Run tests
+        run: uv run python -m pytest --doctest-modules
 
   tests-and-type-check:
     runs-on: ubuntu-latest
