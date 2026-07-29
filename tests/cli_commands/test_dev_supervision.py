@@ -147,6 +147,31 @@ def test_process_group_probe_treats_permission_error_as_not_running() -> None:
     assert not process_group._process_group_exists(forbidden, 123)
 
 
+def test_posix_termination_reaps_a_gracefully_exited_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[float] = []
+
+    class ExitedProcess:
+        pid = 123
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append(timeout or 0)
+            return 0
+
+    def exited_group(_pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setitem(vars(process_group.os), "killpg", exited_group)
+    monkeypatch.setitem(vars(process_group.signal), "SIGKILL", 9)
+
+    process_group._terminate_posix(cast("ManagedProcess", ExitedProcess()), grace_seconds=0)
+
+    assert calls
+
+
 def test_terminate_kills_a_real_child_process_tree(tmp_path: Path) -> None:
     managed = _spawn_tree(tmp_path / "child.pid")
     child_pid = _child_pid(tmp_path / "child.pid")
