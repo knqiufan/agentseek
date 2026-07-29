@@ -8,6 +8,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PureWindowsPath
 from threading import Event, Lock
@@ -384,10 +386,11 @@ def test_is_external_spec_local_type() -> None:
 def _assert_next_steps(output: str, *, project_path: Path, cd_path: str | None = None) -> None:
     display_path = str(project_path)
     if cd_path is None:
-        cd_path = subprocess.list2cmdline([display_path]) if os.name == "nt" else shlex.quote(display_path)
+        cd_path = f'"{display_path}"' if os.name == "nt" else shlex.quote(display_path)
+    cd_command = "cd /d" if os.name == "nt" else "cd"
     assert f"Created {display_path}" in output
     assert "Next:" in output
-    assert f"cd {cd_path}" in output
+    assert f"{cd_command} {cd_path}" in output
     assert "agentseek info" in output
     assert "agentseek task --list" in output
     assert "agentseek doctor" in output
@@ -395,9 +398,28 @@ def _assert_next_steps(output: str, *, project_path: Path, cd_path: str | None =
 
 def test_quote_directory_for_shell_uses_the_current_platform_convention() -> None:
     path = str(Path("output directory") / "fake project")
-    expected = subprocess.list2cmdline([path]) if os.name == "nt" else shlex.quote(path)
+    expected = f'"{path}"' if os.name == "nt" else shlex.quote(path)
 
     assert create_module._quote_directory_for_shell(path) == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
+def test_quote_directory_for_shell_is_copy_paste_safe_in_cmd(tmp_path: Path) -> None:
+    target = tmp_path / "review&probe-directory"
+    target.mkdir()
+    command = create_module._directory_change_command(str(target))
+    script = tmp_path / "copy-paste.cmd"
+    script.write_text(f"@echo off\n{command}\ncd\n", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603
+        ["cmd.exe", "/d", "/c", str(script)],  # noqa: S607
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).resolve() == target.resolve()
 
 
 def _assert_no_next_steps(output: str) -> None:
@@ -703,7 +725,7 @@ def _mock_explicit_catalog(  # noqa: C901
     clone_release: Event | None = None,
 ) -> tuple[list[tuple[str, str | None, Path, bool]], _ExplicitCatalogState, Path]:
     source_root = _write_catalog(tmp_path / "catalog-source", index)
-    cookiecutters_dir = tmp_path / "cookiecutters"
+    cookiecutters_dir = _explicit_cookiecutters_dir(tmp_path)
     clone_calls: list[tuple[str, str | None, Path, bool]] = []
     state: _ExplicitCatalogState = {
         "cached_head": commit,
@@ -806,10 +828,25 @@ def _explicit_cache_paths(
     normalized_url: str = "https://example.com/teams/agentseek-templates",
     commit: str = _CATALOG_COMMIT,
 ) -> tuple[Path, Path, Path]:
-    namespace = tmp_path / "cookiecutters" / create_module.EXPLICIT_TEMPLATE_REPO_CACHE_DIR
+    namespace = _explicit_cookiecutters_dir(tmp_path) / create_module.EXPLICIT_TEMPLATE_REPO_CACHE_DIR
     digest = hashlib.sha256(normalized_url.encode()).hexdigest()
     digest_dir = namespace / digest
     return namespace, digest_dir, digest_dir / commit
+
+
+def _explicit_cookiecutters_dir(tmp_path: Path) -> Path:
+    """Use a short, isolated cache base for deep explicit-cache tests."""
+
+    identifier = hashlib.sha256(f"{tmp_path.parent.name}/{tmp_path.name}".encode()).hexdigest()[:12]
+    return (Path(tempfile.gettempdir()) / f"cc-{identifier}").resolve()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_explicit_catalog_cache(tmp_path: Path) -> Iterator[None]:
+    """Remove the short shared cache base after each explicit-catalog test."""
+
+    yield
+    shutil.rmtree(_explicit_cookiecutters_dir(tmp_path), ignore_errors=True)
 
 
 def test_help_documents_template_repo() -> None:
@@ -850,7 +887,7 @@ def test_explicit_catalog_list_validates_type_before_fetch_or_cache_write(
     assert result.exit_code == 2
     assert "Unknown framework type" in result.output
     assert clone_calls == []
-    assert not (tmp_path / "cookiecutters").exists()
+    assert not _explicit_cookiecutters_dir(tmp_path).exists()
 
 
 @pytest.mark.parametrize(
@@ -1043,7 +1080,7 @@ def test_explicit_catalog_cold_cache_publishes_metadata_and_warm_cache_reuses_it
     assert cold_result.exit_code == 0, cold_result.output
     assert warm_result.exit_code == 0, warm_result.output
     assert len(clone_calls) == 1
-    metadata_files = _catalog_metadata_files(tmp_path / "cookiecutters")
+    metadata_files = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))
     assert len(metadata_files) == 1
     metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
     assert metadata == {
@@ -1053,8 +1090,7 @@ def test_explicit_catalog_cold_cache_publishes_metadata_and_warm_cache_reuses_it
         "repository_subdirectory": "templates",
     }
     metadata_path = str(metadata_files[0])
-    assert "agentseek" in metadata_path
-    assert "explicit" in metadata_path
+    assert create_module.EXPLICIT_TEMPLATE_REPO_CACHE_DIR in metadata_path
     repository = _cached_catalog_repository(metadata_files[0])
     assert repository.name == create_module.EXPLICIT_CATALOG_REPOSITORY_DIR
     assert metadata_files[0].parent == repository.parent
@@ -1086,7 +1122,7 @@ def test_explicit_catalog_committed_metadata_symlink_cannot_write_outside_stagin
     assert list_result.exit_code == 0, list_result.output
     assert describe_result.exit_code == 0, describe_result.output
     assert outside_metadata.read_text(encoding="utf-8") == "do not touch"
-    metadata_path = _catalog_metadata_files(tmp_path / "cookiecutters")[0]
+    metadata_path = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0]
     repository = _cached_catalog_repository(metadata_path)
     assert metadata_path.parent == repository.parent
     assert (repository / create_module.EXPLICIT_CATALOG_METADATA).is_symlink()
@@ -1143,7 +1179,7 @@ def test_explicit_catalog_rejects_stale_cache_provenance(
     assert first_result.exit_code == 0, first_result.output
 
     if stale_part.startswith("metadata-"):
-        metadata_file = _catalog_metadata_files(tmp_path / "cookiecutters")[0]
+        metadata_file = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0]
         metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
         if stale_part == "metadata-url":
             metadata["repository_url"] = "https://example.com/wrong/catalog"
@@ -1178,7 +1214,7 @@ def test_explicit_catalog_repairs_corrupt_warm_cache_and_moves_stale_entry_aside
     argv = _explicit_args("bub", "--list-templates")
     first_result = _runner().invoke(build_command_app(), argv)
     assert first_result.exit_code == 0, first_result.output
-    metadata_path = _catalog_metadata_files(tmp_path / "cookiecutters")[0]
+    metadata_path = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0]
     cache_entry = metadata_path.parent
     repository = _cached_catalog_repository(metadata_path)
 
@@ -1193,7 +1229,7 @@ def test_explicit_catalog_repairs_corrupt_warm_cache_and_moves_stale_entry_aside
 
     assert second_result.exit_code == 0, second_result.output
     assert len(clone_calls) == 2
-    metadata_files = _catalog_metadata_files(tmp_path / "cookiecutters")
+    metadata_files = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))
     assert metadata_files == [cache_entry / create_module.EXPLICIT_CATALOG_METADATA]
     repaired_repository = _cached_catalog_repository(metadata_files[0])
     assert (repaired_repository / "templates" / "bub" / "remote" / "cookiecutter.json").is_file()
@@ -1214,7 +1250,7 @@ def test_explicit_catalog_repairs_non_pristine_template_worktree(
     argv = _explicit_args("bub", "--list-templates")
     first_result = _runner().invoke(build_command_app(), argv)
     assert first_result.exit_code == 0, first_result.output
-    repository = _cached_catalog_repository(_catalog_metadata_files(tmp_path / "cookiecutters")[0])
+    repository = _cached_catalog_repository(_catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0])
     injected = repository / "templates" / "bub" / "remote" / "injected.txt"
     if damage == "tracked":
         injected = repository / "templates" / "index.json"
@@ -1231,7 +1267,7 @@ def test_explicit_catalog_repairs_non_pristine_template_worktree(
 
     assert second_result.exit_code == 0, second_result.output
     assert len(clone_calls) == 2
-    repaired_repository = _cached_catalog_repository(_catalog_metadata_files(tmp_path / "cookiecutters")[0])
+    repaired_repository = _cached_catalog_repository(_catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0])
     if damage == "tracked":
         assert "tampered" not in (repaired_repository / "templates" / "index.json").read_text(encoding="utf-8")
     else:
@@ -1276,7 +1312,7 @@ def test_explicit_catalog_metadata_requires_exact_keys_and_field_types(
     argv = _explicit_args("bub", "--list-templates")
     first_result = _runner().invoke(build_command_app(), argv)
     assert first_result.exit_code == 0, first_result.output
-    metadata_path = _catalog_metadata_files(tmp_path / "cookiecutters")[0]
+    metadata_path = _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0]
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if metadata_damage == "boolean-schema":
         metadata["schema_version"] = True
@@ -1570,7 +1606,7 @@ def test_explicit_catalog_accepts_https_repository_at_host_root(
 
     assert result.exit_code == 0, result.output
     assert clone_calls[0][0] == "https://git.example/"
-    metadata = json.loads(_catalog_metadata_files(tmp_path / "cookiecutters")[0].read_text(encoding="utf-8"))
+    metadata = json.loads(_catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))[0].read_text(encoding="utf-8"))
     assert metadata["repository_url"] == "https://git.example"
 
 
@@ -1655,7 +1691,7 @@ def test_explicit_catalog_cache_isolates_same_basename_urls_and_commits(
 
     assert all(result.exit_code == 0 for result in results), [result.output for result in results]
     assert len(clone_calls) == 3
-    assert len(_catalog_metadata_files(tmp_path / "cookiecutters")) == 3
+    assert len(_catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path))) == 3
 
 
 def test_explicit_catalog_rejects_wrong_fetched_head_without_publishing(
@@ -1677,7 +1713,7 @@ def test_explicit_catalog_rejects_wrong_fetched_head_without_publishing(
     assert result.exit_code == 1
     assert "HEAD does not match --checkout" in result.output
     assert len(clone_calls) == 1
-    assert _catalog_metadata_files(tmp_path / "cookiecutters") == []
+    assert _catalog_metadata_files(_explicit_cookiecutters_dir(tmp_path)) == []
 
 
 def test_explicit_catalog_fetch_failure_does_not_fall_back(

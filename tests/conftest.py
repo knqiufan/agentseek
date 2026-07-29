@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 
+def _is_unavailable_symlink_capability(exc: OSError) -> bool:
+    """Return whether Windows denied symlink creation for missing privilege."""
+
+    return getattr(exc, "winerror", None) == 1314
+
+
 @pytest.fixture
 def create_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     """Create a test symlink or skip when the runner does not permit it."""
@@ -19,7 +25,9 @@ def create_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[
         try:
             original_symlink_to(link, target, target_is_directory=target_is_directory)
         except OSError as exc:
-            pytest.skip(f"symlink creation is unavailable in this environment: {exc}")
+            if _is_unavailable_symlink_capability(exc):
+                pytest.skip(f"symlink creation is unavailable in this environment: {exc}")
+            raise
 
     original_symlink_to = Path.symlink_to
     monkeypatch.setattr(

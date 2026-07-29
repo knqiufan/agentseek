@@ -21,7 +21,7 @@ pytestmark = pytest.mark.usefixtures("create_symlink")
 def _toml_string(value: str | Path) -> str:
     """Return a TOML basic-string literal for a dynamic test value."""
 
-    return json.dumps(str(value))
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def _write_lifecycle_spec(root: Path) -> None:
@@ -121,6 +121,14 @@ cwd = {task_cwd_toml}
 
 def test_toml_string_escapes_windows_executable_paths() -> None:
     executable = r"C:\Program Files\Python\python.exe"
+
+    parsed = tomllib.loads(f"command = [{_toml_string(executable)}]")
+
+    assert parsed["command"] == [executable]
+
+
+def test_toml_string_preserves_non_bmp_windows_paths() -> None:
+    executable = "C:\\Program Files\\Python-\U0001f600\\python.exe"
 
     parsed = tomllib.loads(f"command = [{_toml_string(executable)}]")
 

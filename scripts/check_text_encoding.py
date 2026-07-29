@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = ("src", "tests", "scripts", "contrib")
+SOURCE_ROOTS = ("src", "tests", "scripts", "contrib", "templates", "skills")
 TEXT_PATH_METHODS = {"read_text", "write_text"}
+TEMPLATE_EXPRESSION = re.compile(r"\{\{[^{}\n]*\}\}")
+BINARY_OPEN_BASELINE = "encoding-check: binary"
 
 
 def _has_encoding_argument(call: ast.Call) -> bool:
@@ -62,12 +65,27 @@ def _python_files() -> Iterable[Path]:
             yield from sorted(root.rglob("*.py"))
 
 
+def _source_for_parsing(path: Path) -> str:
+    source = path.read_text(encoding="utf-8")
+    if "templates" in path.relative_to(ROOT).parts:
+        return TEMPLATE_EXPRESSION.sub("template_value", source)
+    return source
+
+
 def main() -> int:
     violations: list[str] = []
     for path in _python_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = _source_for_parsing(path)
+        binary_baseline_lines = {
+            line_number for line_number, line in enumerate(source.splitlines(), start=1) if BINARY_OPEN_BASELINE in line
+        }
+        tree = ast.parse(source, filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and _is_text_io_without_encoding(node):
+            if (
+                isinstance(node, ast.Call)
+                and node.lineno not in binary_baseline_lines
+                and _is_text_io_without_encoding(node)
+            ):
                 relative_path = path.relative_to(ROOT).as_posix()
                 violations.append(f"{relative_path}:{node.lineno}: explicit encoding= is required for text file I/O")
 
