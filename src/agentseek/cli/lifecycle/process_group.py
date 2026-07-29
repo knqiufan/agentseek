@@ -93,7 +93,7 @@ def _reap_root(managed: ManagedProcess) -> None:
 def _process_group_exists(killpg: Any, pgid: int) -> bool:
     try:
         killpg(pgid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
     return True
 

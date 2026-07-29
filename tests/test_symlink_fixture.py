@@ -17,7 +17,7 @@ def test_create_symlink_skips_only_missing_windows_privilege(
     tmp_path: Path,
 ) -> None:
     def unavailable(*_args: object, **_kwargs: object) -> None:
-        raise _WindowsSymlinkPrivilegeError("privilege not held")
+        raise _WindowsSymlinkPrivilegeError
 
     monkeypatch.setattr(Path, "symlink_to", unavailable)
     create_symlink = request.getfixturevalue("create_symlink")
@@ -32,10 +32,10 @@ def test_create_symlink_reraises_unrelated_os_errors(
     tmp_path: Path,
 ) -> None:
     def already_exists(*_args: object, **_kwargs: object) -> None:
-        raise FileExistsError("link already exists")
+        raise FileExistsError
 
     monkeypatch.setattr(Path, "symlink_to", already_exists)
     create_symlink = request.getfixturevalue("create_symlink")
 
-    with pytest.raises(FileExistsError, match="link already exists"):
+    with pytest.raises(FileExistsError):
         create_symlink(tmp_path / "link", tmp_path / "target")
