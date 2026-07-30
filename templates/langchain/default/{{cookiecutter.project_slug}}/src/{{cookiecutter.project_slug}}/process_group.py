@@ -69,18 +69,20 @@ def _terminate_posix(managed: ManagedProcess, *, grace_seconds: float) -> None:
     killpg = vars(os)["killpg"]
     sigkill = cast("int", vars(signal)["SIGKILL"])
     try:
-        killpg(managed.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_seconds
-    while _process_group_exists(killpg, managed.pid) and time.monotonic() < deadline:
-        managed.poll()
-        time.sleep(SHUTDOWN_POLL_SECONDS)
-    if _process_group_exists(killpg, managed.pid):
         try:
-            killpg(managed.pid, sigkill)
+            killpg(managed.pid, signal.SIGTERM)
         except ProcessLookupError:
             return
+        deadline = time.monotonic() + grace_seconds
+        while _process_group_exists(killpg, managed.pid) and time.monotonic() < deadline:
+            managed.poll()
+            time.sleep(SHUTDOWN_POLL_SECONDS)
+        if _process_group_exists(killpg, managed.pid):
+            try:
+                killpg(managed.pid, sigkill)
+            except ProcessLookupError:
+                return
+    finally:
         _reap_root(managed)
 
 
@@ -92,7 +94,7 @@ def _reap_root(managed: ManagedProcess) -> None:
 def _process_group_exists(killpg: Any, pgid: int) -> bool:
     try:
         killpg(pgid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
     return True
 
