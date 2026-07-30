@@ -22,6 +22,68 @@ ROOT_READMES = (
     ROOT / "README.zh.md",
 )
 IMMUTABLE_ASSET_ROOT = "https://raw.githubusercontent.com/ob-labs/agentseek/v0.1.1/diagram/agentseek-readme/"
+CONTRIBUTING_GUIDE_URL = "https://github.com/ob-labs/agentseek/blob/HEAD/CONTRIBUTING.md"
+README_BANNER_TARGETS = (
+    "https://github.com/ob-labs/agentseek/stargazers",
+    "https://github.com/ob-labs/agentseek/releases",
+    "https://pypi.org/project/agentseek/",
+    "https://github.com/ob-labs/agentseek/actions/workflows/main.yml?query=branch%3Amain",
+    "https://github.com/ob-labs/agentseek/graphs/contributors",
+    "https://github.com/ob-labs/agentseek/issues",
+    "https://github.com/ob-labs/agentseek/blob/HEAD/LICENSE",
+    "https://ob-labs.github.io/agentseek/",
+)
+README_HERO_BADGE_PAIRS = (
+    (
+        "https://github.com/ob-labs/agentseek/stargazers",
+        "https://img.shields.io/github/stars/ob-labs/agentseek?style=flat-square&logo=github",
+    ),
+    (
+        "https://github.com/ob-labs/agentseek/releases",
+        "https://img.shields.io/github/v/release/ob-labs/agentseek?style=flat-square",
+    ),
+    ("https://pypi.org/project/agentseek/", "https://img.shields.io/pypi/v/agentseek?style=flat-square&logo=pypi"),
+    (
+        "https://pypi.org/project/agentseek/",
+        "https://img.shields.io/pypi/pyversions/agentseek?style=flat-square&logo=python",
+    ),
+    (
+        "https://github.com/ob-labs/agentseek/actions/workflows/main.yml?query=branch%3Amain",
+        "https://img.shields.io/github/actions/workflow/status/ob-labs/agentseek/main.yml?branch=main&style=flat-square&label=CI",
+    ),
+    (
+        "https://github.com/ob-labs/agentseek/graphs/contributors",
+        "https://img.shields.io/github/contributors/ob-labs/agentseek?style=flat-square",
+    ),
+    (
+        "https://github.com/ob-labs/agentseek/issues",
+        "https://img.shields.io/github/issues/ob-labs/agentseek?style=flat-square",
+    ),
+    (
+        "https://github.com/ob-labs/agentseek/blob/HEAD/LICENSE",
+        "https://img.shields.io/github/license/ob-labs/agentseek?style=flat-square",
+    ),
+    (
+        "https://ob-labs.github.io/agentseek/",
+        "https://img.shields.io/badge/docs-AgentSeek-0ea5e9?style=flat-square",
+    ),
+)
+README_COMMUNITY_DOCS_TARGETS = {
+    "README.md": "https://ob-labs.github.io/agentseek/",
+    "README.zh.md": "https://ob-labs.github.io/agentseek/zh/",
+}
+README_CONTRIBUTION_CTA_ALTS = {
+    "README.md": "Contribute to AgentSeek",
+    "README.zh.md": "为 AgentSeek 贡献",
+}
+README_ANCHORS = (
+    "experience-adlc",
+    "what-is-agentseek",
+    "agent-development-lifecycle",
+    "guided-templates",
+    "community",
+    "development",
+)
 
 CANONICAL_RESEARCH_WALKTHROUGH = (
     "uv tool install agentseek",
@@ -49,9 +111,10 @@ README_SECTION_MARKERS = {
         "## Guided templates",
         "## Core concepts and commands",
         "## Documentation",
-        "## Development",
-        "## Community and course",
-        "## License",
+        "## 🌐 Next Steps & Community",
+        "## 🛠️ Development",
+        "### Contributing",
+        "## 📄 License",
     ),
     "README.zh.md": (
         "## 体验本地 ADLC",
@@ -61,10 +124,16 @@ README_SECTION_MARKERS = {
         "## 引导式模板",
         "## 核心概念与命令",
         "## 文档",
-        "## 开发",
-        "## 社区与课程",
-        "## License",
+        "## 🌐 下一步与社区",
+        "## 🛠️ 开发",
+        "### 贡献",
+        "## 📄 许可证",
     ),
+}
+
+README_STAR_HISTORY_TEXT = {
+    "README.md": ("Star History",),
+    "README.zh.md": ("Star 历史",),
 }
 
 README_REQUIRED_TEXT = {
@@ -113,6 +182,31 @@ def _bash_commands(text: str) -> list[str]:
             line.strip() for line in block.splitlines() if line.strip() and not line.lstrip().startswith("#")
         )
     return commands
+
+
+def _hero_badges_html(text: str) -> str:
+    """Return the linked-badge block from the centered README hero."""
+    hero_start = text.index('<div align="center">')
+    heading_end = text.index("</h1>", hero_start)
+    badges_start = text.index("<p>\n", heading_end)
+    badges_end = text.index("</p>", badges_start)
+
+    return text[badges_start:badges_end]
+
+
+def _hero_badge_pairs(text: str) -> list[tuple[str, str]]:
+    """Extract the ordered linked badge images from the centered README hero."""
+    badges = _hero_badges_html(text)
+
+    return re.findall(r'<a href="([^"]+)"><img alt="[^"]+" src="([^"]+)" /></a>', badges)
+
+
+def _community_section(text: str) -> str:
+    """Return the localized community block before the development separator."""
+    community_start = text.index('<a id="community"></a>')
+    development_separator = text.index("\n---\n", community_start)
+
+    return text[community_start:development_separator]
 
 
 def _public_template_readmes() -> list[Path]:
@@ -197,6 +291,72 @@ def test_root_readmes_keep_localized_adlc_structure_and_current_runtime_truth(re
     assert "frontend-dev" not in text, readme
     assert "agentseek task observability" not in text, readme
     assert not re.search(r"seekdb", text, flags=re.IGNORECASE), readme
+
+
+@pytest.mark.parametrize("readme", ROOT_READMES)
+def test_root_readmes_keep_the_shared_banner_contract(readme: Path) -> None:
+    """Both landing pages expose the same AgentSeek hero entry points."""
+    text = readme.read_text(encoding="utf-8")
+    badge_pairs = _hero_badge_pairs(text)
+
+    assert text.startswith('<div align="center">'), readme
+    assert "oceanbase/seekdb" not in text, readme
+    assert badge_pairs == list(README_HERO_BADGE_PAIRS), readme
+    assert len(badge_pairs) == 9, readme
+    assert all("style=flat-square" in source for _target, source in badge_pairs), readme
+    assert {target for target, _source in badge_pairs} == set(README_BANNER_TARGETS), readme
+    for anchor in README_ANCHORS:
+        assert f'<a id="{anchor}"></a>' in text, (readme, anchor)
+        assert f"](#{anchor})" in text, (readme, anchor)
+
+
+@pytest.mark.parametrize("readme", ROOT_READMES)
+def test_root_readmes_keep_contributor_wall_without_star_history(readme: Path) -> None:
+    """Contribution sections must show contributors without a Star History embed."""
+    text = readme.read_text(encoding="utf-8")
+    contributor_wall = re.search(
+        r'<a href="https://github\.com/ob-labs/agentseek/graphs/contributors">'
+        r'<img alt="[^"]+" src="https://contrib\.rocks/image\?repo=ob-labs/agentseek&max=400" /></a>',
+        text,
+    )
+
+    assert contributor_wall is not None, readme
+    assert "star-history.com" not in text, readme
+    for forbidden in README_STAR_HISTORY_TEXT[readme.name]:
+        assert forbidden not in text, (readme, forbidden)
+
+
+def test_root_readme_heroes_keep_matching_badge_targets_and_images() -> None:
+    """Language variants must keep an identical ordered linked-badge contract."""
+    english_badges, chinese_badges = (_hero_badge_pairs(readme.read_text(encoding="utf-8")) for readme in ROOT_READMES)
+
+    assert english_badges == chinese_badges
+    assert {target for target, _source in english_badges} == {target for target, _source in chinese_badges}
+    assert {source for _target, source in english_badges} == {source for _target, source in chinese_badges}
+
+
+@pytest.mark.parametrize("readme", ROOT_READMES)
+def test_root_readme_heroes_split_badges_into_balanced_rows(readme: Path) -> None:
+    """The badge strip must render as an intentional five-plus-four layout."""
+    badge_rows = _hero_badges_html(readme.read_text(encoding="utf-8")).split("<br />")
+
+    assert [row.count('<a href="') for row in badge_rows] == [5, 4], readme
+
+
+@pytest.mark.parametrize("readme", ROOT_READMES)
+def test_root_readmes_keep_localized_community_routes_and_contribution_cta(readme: Path) -> None:
+    """Community routes must send readers to docs, issues, and contribution instructions."""
+    community = _community_section(readme.read_text(encoding="utf-8"))
+    contribution_cta = re.search(
+        rf'<a href="([^"]+)"><img alt="{re.escape(README_CONTRIBUTION_CTA_ALTS[readme.name])}"',
+        community,
+    )
+
+    assert README_COMMUNITY_DOCS_TARGETS[readme.name] in community, readme
+    assert "https://github.com/ob-labs/agentseek/issues" in community, readme
+    assert CONTRIBUTING_GUIDE_URL in community, readme
+    assert contribution_cta is not None, readme
+    assert contribution_cta.group(1) == CONTRIBUTING_GUIDE_URL, readme
 
 
 def test_root_dotenv_example_matches_runtime_alias_contract() -> None:
