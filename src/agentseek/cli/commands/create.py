@@ -1571,7 +1571,7 @@ def _print_created_next_steps(generated: Path | None, *, base_dir: Path) -> None
     display_path = _display_generated_path(generated, base_dir=base_dir)
     typer.echo(f"Created {display_path}")
     typer.echo()
-    typer.echo("Next:")
+    typer.echo("Next (PowerShell):" if os.name == "nt" else "Next:")
     typer.echo(f"  {_directory_change_command(display_path)}")
     typer.echo("  agentseek info")
     typer.echo("  agentseek task --list")
@@ -1580,17 +1580,16 @@ def _print_created_next_steps(generated: Path | None, *, base_dir: Path) -> None
 
 def _quote_directory_for_shell(path: str) -> str:
     if os.name == "nt":
-        # ``list2cmdline`` quotes C runtime arguments, not cmd.exe commands.
-        # Always quote the path so cmd.exe treats metacharacters such as ``&``
-        # and ``|`` as literal directory-name characters.
-        return f'"{path}"'
+        # cmd.exe expands %NAME% even inside double quotes. PowerShell single
+        # quotes and -LiteralPath preserve valid Windows directory names.
+        return "'" + path.replace("'", "''") + "'"
     return shlex.quote(path)
 
 
 def _directory_change_command(path: str) -> str:
-    """Return a copy-pasteable directory-change command for the current shell."""
+    """Return a copy-pasteable directory-change command for the supported shell."""
 
-    command = "cd /d" if os.name == "nt" else "cd"
+    command = "Set-Location -LiteralPath" if os.name == "nt" else "cd"
     return f"{command} {_quote_directory_for_shell(path)}"
 
 

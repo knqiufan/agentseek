@@ -386,10 +386,10 @@ def test_is_external_spec_local_type() -> None:
 def _assert_next_steps(output: str, *, project_path: Path, cd_path: str | None = None) -> None:
     display_path = str(project_path)
     if cd_path is None:
-        cd_path = f'"{display_path}"' if os.name == "nt" else shlex.quote(display_path)
-    cd_command = "cd /d" if os.name == "nt" else "cd"
+        cd_path = create_module._quote_directory_for_shell(display_path)
+    cd_command = "Set-Location -LiteralPath" if os.name == "nt" else "cd"
     assert f"Created {display_path}" in output
-    assert "Next:" in output
+    assert ("Next (PowerShell):" if os.name == "nt" else "Next:") in output
     assert f"{cd_command} {cd_path}" in output
     assert "agentseek info" in output
     assert "agentseek task --list" in output
@@ -397,22 +397,32 @@ def _assert_next_steps(output: str, *, project_path: Path, cd_path: str | None =
 
 
 def test_quote_directory_for_shell_uses_the_current_platform_convention() -> None:
-    path = str(Path("output directory") / "fake project")
-    expected = f'"{path}"' if os.name == "nt" else shlex.quote(path)
+    path = str(Path("output directory") / "fake project's directory")
+    expected = "'" + path.replace("'", "''") + "'" if os.name == "nt" else shlex.quote(path)
 
     assert create_module._quote_directory_for_shell(path) == expected
 
 
-@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
-def test_quote_directory_for_shell_is_copy_paste_safe_in_cmd(tmp_path: Path) -> None:
-    target = tmp_path / "review&probe-directory"
+@pytest.mark.skipif(os.name != "nt", reason="requires PowerShell")
+def test_directory_change_command_preserves_percent_tokens_in_powershell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTSEEK_PERCENT_PROBE", "must-not-expand")
+    target = tmp_path / "review%AGENTSEEK_PERCENT_PROBE%directory's & literal"
     target.mkdir()
     command = create_module._directory_change_command(str(target))
-    script = tmp_path / "copy-paste.cmd"
-    script.write_text(f"@echo off\n{command}\ncd\n", encoding="utf-8")
+    powershell = shutil.which("powershell.exe")
+    assert powershell is not None
 
     result = subprocess.run(  # noqa: S603
-        ["cmd.exe", "/d", "/c", str(script)],  # noqa: S607
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"{command}; [Console]::Out.WriteLine((Get-Location).Path)",
+        ],
         capture_output=True,
         check=False,
         text=True,
