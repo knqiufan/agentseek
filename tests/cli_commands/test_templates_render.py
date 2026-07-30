@@ -13,6 +13,7 @@ catch Jinja errors, missing files, and unsubstituted variables before they hit
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import tomllib
@@ -86,6 +87,7 @@ rag_host_binding_templates = {
     ("langchain", "agentic-rag-openvino"),
 }
 language_instruction_templates = {
+    ("deepagents", "mcp"),
     ("deepagents", "research"),
     ("deepagents", "sandbox"),
     ("langchain", "agentic-rag"),
@@ -97,6 +99,7 @@ language_instruction_templates = {
 }
 dependency_sync_templates = {
     ("deepagents", "content-builder"),
+    ("deepagents", "mcp"),
     ("deepagents", "research"),
     ("deepagents", "sandbox"),
     ("langchain", "agentic-rag-hybrid"),
@@ -179,6 +182,173 @@ def _assert_deepagents_default_template(generated: Path) -> None:
     assert "does not include a frontend" in readme_text
     assert "Answer in the same language as the user's question." in readme_text
     assert "Answer in the same language as the user's question." in binding_text
+
+
+def _assert_deepagents_mcp_template(generated: Path, lifecycle_data: dict[str, Any]) -> None:
+    pyproject_data = tomllib.loads((generated / "pyproject.toml").read_text(encoding="utf-8"))
+    requires_python = pyproject_data["project"]["requires-python"]
+    assert requires_python == ">=3.12"
+    assert pyproject_data["project"]["dependencies"] == [
+        "deepagents==0.6.12",
+        "langchain>=1.0",
+        "langchain-anthropic>=1.0",
+        "langchain-google-genai>=4.0",
+        "langchain-mcp-adapters>=0.3,<0.4",
+        "langchain-openai>=0.3",
+        "mcp>=1.28,<2",
+        "python-dotenv>=1.0",
+        "starlette>=0.27",
+        "langgraph-cli[inmem]>=0.4",
+    ]
+    assert set(lifecycle_data["processes"]) == {"calculator-http", "langgraph", "frontend"}
+    assert set(lifecycle_data["tasks"]) == {"sync", "frontend", "mcp-smoke"}
+    assert lifecycle_data["paths"]["required"] == [
+        "pyproject.toml",
+        "langgraph.json",
+        ".mcp.json",
+        "frontend/package.json",
+        "frontend/node_modules",
+    ]
+    assert lifecycle_data["tasks"]["mcp-smoke"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.mcp_smoke",
+    ]
+    assert json.loads((generated / ".mcp.json").read_text(encoding="utf-8")) == {
+        "mcpServers": {
+            "calculator": {
+                "transport": "stdio",
+                "command": "${PYTHON_EXECUTABLE}",
+                "args": ["-m", f"{generated.name}.calculator_server"],
+            },
+            "calculator_http": {
+                "transport": "http",
+                "url": "http://127.0.0.1:8765/mcp",
+            },
+        }
+    }
+    config = json.loads((generated / "langgraph.json").read_text(encoding="utf-8"))
+    mcp_tools_text = (generated / "src" / generated.name / "mcp_tools.py").read_text(encoding="utf-8")
+    agent_text = (generated / "src" / generated.name / "agent.py").read_text(encoding="utf-8")
+    assert config["graphs"]["mcp"] == f"./src/{generated.name}/agent.py:make_graph"
+    assert "tool_name_prefix=True" in mcp_tools_text
+    assert "register_harness_profile" in agent_text
+    assert "GeneralPurposeSubagentProfile(enabled=False)" in agent_text
+    assert "Answer in the same language as the user's question." in agent_text
+    assert "frontend" in lifecycle_data["services"]
+    assert "langgraph" in lifecycle_data["services"]
+    assert lifecycle_data["services"]["calculator-http"] == {"url": "http://127.0.0.1:8765/health"}
+    assert lifecycle_data["processes"]["calculator-http"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.calculator_http_server",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765",
+    ]
+    assert lifecycle_data["checks"]["calculator-http"] == {
+        "type": "http",
+        "target": "http://127.0.0.1:8765/health",
+        "timeout": 2,
+        "attempts": 10,
+    }
+    assert "mcp-smoke" in lifecycle_data["tasks"]
+    assert lifecycle_data["env"]["AGENTSEEK_MODEL_API_KEY"] == {
+        "required": True,
+        "description": "Provider-independent credential passed to the selected model adapter.",
+    }
+    assert "OPENAI_API_KEY" not in lifecycle_data["env"]
+    assert "ANTHROPIC_API_KEY" not in lifecycle_data["env"]
+    assert "GOOGLE_API_KEY" not in lifecycle_data["env"]
+    assert "LANGGRAPH_HOST" in lifecycle_data["env"]
+    assert "FRONTEND_HOST" in lifecycle_data["env"]
+    assert lifecycle_data["env"]["LANGGRAPH_HOST"] == {
+        "required": False,
+        "default": "127.0.0.1",
+        "description": "Bind address for the LangGraph development server.",
+    }
+    assert lifecycle_data["env"]["FRONTEND_HOST"] == {
+        "required": False,
+        "default": "127.0.0.1",
+        "description": "Bind address for the Vite development server.",
+    }
+    assert lifecycle_data["processes"]["langgraph"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.langgraph_dev",
+    ]
+    frontend = generated / "frontend"
+    assert (frontend / "package.json").is_file()
+    assert (frontend / "src" / "App.test.tsx").is_file()
+    assert (frontend / "src" / "ToolCallCard.test.tsx").is_file()
+    app_text = (frontend / "src" / "App.tsx").read_text(encoding="utf-8")
+    vite_text = (frontend / "vite.config.ts").read_text(encoding="utf-8")
+    assert "window.location.hostname" in app_text
+    assert 'assistantId: "mcp"' in app_text
+    assert "FRONTEND_HOST" in vite_text
+    assert "process.env.FRONTEND_HOST" in vite_text
+    frontend_env_text = (frontend / ".env.example").read_text(encoding="utf-8")
+    production_surfaces = {
+        ".env.example",
+        ".gitignore",
+        "index.html",
+        "package.json",
+        "src/App.tsx",
+        "src/ThinkingBlock.tsx",
+        "src/TodoList.tsx",
+        "src/ToolCallCard.tsx",
+        "src/main.tsx",
+        "src/styles.css",
+        "src/vite-env.d.ts",
+        "tsconfig.json",
+        "tsconfig.node.json",
+        "vite.config.ts",
+    }
+    test_surfaces = {
+        "src/App.test.tsx",
+        "src/ToolCallCard.test.tsx",
+        "vite.config.test.ts",
+    }
+    rendered_frontend_files = {path.relative_to(frontend).as_posix() for path in frontend.rglob("*") if path.is_file()}
+    assert rendered_frontend_files == production_surfaces | test_surfaces
+    surface_text = {
+        relative_path: (frontend / relative_path).read_text(encoding="utf-8") for relative_path in production_surfaces
+    }
+    shipped_production_config = "\n".join(surface_text.values())
+    browser_env_variables = set(re.findall(r"import\.meta\.env\.([A-Z][A-Z0-9_]*)", shipped_production_config))
+    assert browser_env_variables == {"VITE_LANGGRAPH_API_URL"}
+    forbidden_patterns = {
+        "static server URL": r"https?://[a-z0-9]",
+        "server header": r"(?:['\"]?(?:authorization|x-api-key|headers?)['\"]?\s*:)",
+        "credential value": r"\b(?:api[_-]?key|token|password|bearer)\b",
+        "MCP config": r"(?:\.mcp\.json|mcpservers|vite_[a-z0-9_]*mcp|mcp[_-](?:url|token|key|password|headers?))",
+        "config editor": r"(?:config(?:uration)?\s*editor|edit(?:or)?\s+(?:mcp|server|connection))",
+    }
+    for label, pattern in forbidden_patterns.items():
+        assert re.search(pattern, shipped_production_config, flags=re.IGNORECASE) is None, label
+    assert "# VITE_LANGGRAPH_API_URL=" in frontend_env_text
+    assert "VITE_LANGGRAPH_API_URL=http://127.0.0.1" not in frontend_env_text
+    root_env_text = (generated / ".env.example").read_text(encoding="utf-8")
+    assert "LANGGRAPH_HOST=" not in root_env_text
+    assert "FRONTEND_HOST=" not in root_env_text
+    package_data = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
+    assert package_data["engines"]["node"] == "^20.19.0 || ^22.13.0 || >=24.0.0"
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "Run `agentseek task sync`, `agentseek task frontend`, and" in readme_text
+    assert "`agentseek task mcp-smoke`, then inspect with `agentseek doctor`" in readme_text
+    assert "all three development services with `agentseek dev`." in readme_text
+    assert "agentseek task mcp-smoke" in readme_text
+    assert "LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev" in readme_text
+    assert "`frontend/.env`" in readme_text
+    assert "Node.js `^20.19.0 || ^22.13.0 || >=24.0.0`" in readme_text
+    assert f"Python {requires_python.removeprefix('>=')} or newer with `uv`." in readme_text
 
 
 def _assert_language_instruction_template(generated: Path) -> None:
@@ -395,6 +565,9 @@ def test_template_renders_without_unrendered_jinja(
 
     if (type_name, template_name) == ("deepagents", "default"):
         _assert_deepagents_default_template(generated)
+
+    if (type_name, template_name) == ("deepagents", "mcp"):
+        _assert_deepagents_mcp_template(generated, lifecycle_data)
 
     if (type_name, template_name) in language_instruction_templates:
         _assert_language_instruction_template(generated)
